@@ -357,6 +357,12 @@ namespace SensorFlex.Player.Library
         volatile bool m_StopLoading;
         Thread m_LoadThread;
         ConcurrentQueue<LoadedFrame> m_UploadQueue;
+        int m_EnqueuedFrames;
+        int m_UploadedFrames;
+        bool m_LoggedFirstFrameFound;
+        bool m_LoggedFirstEnqueue;
+        bool m_LoggedFirstUpload;
+        bool m_LoggedReady;
 
         public void Start(SensorFlexSettings settings, IFrameLoaderState state, int framesToWait)
         {
@@ -364,6 +370,12 @@ namespace SensorFlex.Player.Library
             m_State = state;
             m_FramesToWait = framesToWait;
             m_StopLoading = false;
+            m_EnqueuedFrames = 0;
+            m_UploadedFrames = 0;
+            m_LoggedFirstFrameFound = false;
+            m_LoggedFirstEnqueue = false;
+            m_LoggedFirstUpload = false;
+            m_LoggedReady = false;
 
             string path = settings.zipFilePath;
             if (!Path.IsPathRooted(path))
@@ -423,6 +435,9 @@ namespace SensorFlex.Player.Library
                     ? ArchiveIOUtils.ComputeConversionMatrix(meta.coordinate_system.handedness, meta.coordinate_system.forward)
                     : Matrix4x4.identity;
 
+                if (!ValidateArchiveLayout(archive, meta.scene_id, state.TotalFrames))
+                    return null;
+
                 Debug.Log($"[SF] ZIP meta: scene={meta.scene_id} frames={state.TotalFrames} fps={meta.fps} " +
                           $"handedness={meta.coordinate_system?.handedness} forward={meta.coordinate_system?.forward}");
                 return meta.scene_id;
@@ -432,6 +447,53 @@ namespace SensorFlex.Player.Library
                 Debug.LogError("[SF] ZIP meta read error: " + e);
                 return null;
             }
+        }
+
+        static bool ValidateArchiveLayout(ZipArchive archive, string sceneId, int totalFrames)
+        {
+            if (string.IsNullOrEmpty(sceneId))
+            {
+                Debug.LogError("[SF] ZIP format error: scene_id is missing from scene meta.json.");
+                return false;
+            }
+
+            string sceneMetaPath = $"{sceneId}/meta.json";
+            if (archive.GetEntry(sceneMetaPath) == null)
+            {
+                Debug.LogError($"[SF] ZIP format error: expected scene metadata at '{sceneMetaPath}'.");
+                return false;
+            }
+
+            int sampleCount = Math.Min(totalFrames, 3);
+            for (int frameIndex = 0; frameIndex < sampleCount; frameIndex++)
+            {
+                string prefix = $"{sceneId}/frames/{frameIndex:D6}/";
+                var rgbEntry = archive.GetEntry(prefix + "rgb.jpg");
+                var jsonMetaEntry = archive.GetEntry(prefix + "meta.json");
+                var binMetaEntry = archive.GetEntry(prefix + "meta.bin");
+
+                if (rgbEntry == null)
+                {
+                    Debug.LogError($"[SF] ZIP format error: expected RGB frame at '{prefix}rgb.jpg'.");
+                    return false;
+                }
+
+                if (jsonMetaEntry != null)
+                    continue;
+
+                if (binMetaEntry != null)
+                {
+                    Debug.LogError(
+                        $"[SF] ZIP format mismatch: found legacy frame metadata '{prefix}meta.bin' but expected '{prefix}meta.json'. " +
+                        "Please regenerate the archive with the current converter.");
+                    return false;
+                }
+
+                Debug.LogError($"[SF] ZIP format error: expected frame metadata at '{prefix}meta.json'.");
+                return false;
+            }
+
+            return true;
         }
 
         void LoadFrames(string path, string sceneId)
@@ -452,6 +514,12 @@ namespace SensorFlex.Player.Library
                         var metaEntry = archive.GetEntry(prefix + "meta.json");
                         var depthEntry = archive.GetEntry(prefix + "depth.bin");
                         if (rgbEntry == null || metaEntry == null) continue;
+
+                        if (!m_LoggedFirstFrameFound)
+                        {
+                            Debug.Log($"[SF] ZIP first frame located at {prefix}");
+                            m_LoggedFirstFrameFound = true;
+                        }
 
                         Enqueue(globalOffset + frameIndex, ArchiveIOUtils.ReadEntry(rgbEntry), ArchiveIOUtils.ReadEntry(metaEntry),
                             depthEntry != null ? ArchiveIOUtils.ReadEntry(depthEntry) : null);
@@ -475,6 +543,13 @@ namespace SensorFlex.Player.Library
 
             if (!m_StopLoading)
             {
+                m_EnqueuedFrames++;
+                if (!m_LoggedFirstEnqueue)
+                {
+                    Debug.Log($"[SF] ZIP first frame enqueued. GlobalFrame={globalFrameIndex}");
+                    m_LoggedFirstEnqueue = true;
+                }
+
                 m_UploadQueue.Enqueue(new LoadedFrame
                 {
                     FrameIndex = globalFrameIndex,
@@ -513,6 +588,20 @@ namespace SensorFlex.Player.Library
                 m_State.SlotGlobalIdx[slot] = item.FrameIndex;
                 m_State.SlotReady[slot] = true;
                 m_State.MarkBuffered(m_FramesToWait);
+                m_UploadedFrames++;
+
+                if (!m_LoggedFirstUpload)
+                {
+                    Debug.Log($"[SF] ZIP first frame uploaded. GlobalFrame={item.FrameIndex} Slot={slot}");
+                    m_LoggedFirstUpload = true;
+                }
+
+                if (!m_LoggedReady && m_State.IsReady)
+                {
+                    Debug.Log($"[SF] ZIP loader ready. Uploaded={m_UploadedFrames} Enqueued={m_EnqueuedFrames} FramesToWait={m_FramesToWait}");
+                    m_LoggedReady = true;
+                }
+
                 uploaded++;
             }
         }

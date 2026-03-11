@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.Management;
 using UnityEngine.XR.ARSubsystems;
 
@@ -38,6 +39,13 @@ namespace SensorFlex.Player
             StartSubsystem<XRCameraSubsystem>();
             StartSubsystem<XRSessionSubsystem>();
             StartSubsystem<XROcclusionSubsystem>();
+
+            var cam = GetLoadedSubsystem<XRCameraSubsystem>();
+            var ses = GetLoadedSubsystem<XRSessionSubsystem>();
+            var occ = GetLoadedSubsystem<XROcclusionSubsystem>();
+            Debug.Log($"[SF] Subsystem running states after loader start: Camera={cam?.running} Session={ses?.running} Occlusion={occ?.running}");
+
+            RebindSceneARSessionIfNeeded();
             return true;
         }
 
@@ -57,6 +65,22 @@ namespace SensorFlex.Player
             DestroySubsystem<XRSessionSubsystem>();
             DestroySubsystem<XROcclusionSubsystem>();
             return true;
+        }
+
+        static void RebindSceneARSessionIfNeeded()
+        {
+            foreach (var session in Object.FindObjectsByType<ARSession>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (session == null || !session.enabled || !session.gameObject.activeInHierarchy)
+                    continue;
+
+                if (session.subsystem != null)
+                    continue;
+
+                Debug.Log("[SF] Rebinding ARSession after SensorFlex loader startup.");
+                session.enabled = false;
+                session.enabled = true;
+            }
         }
     }
 }

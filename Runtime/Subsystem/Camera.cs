@@ -63,11 +63,11 @@ namespace SensorFlex.Player.Subsystem
 
             // ── Loading screen ───────────────────────────────────────────────────
 
-            private const string LoadingTextureResourcePath = "Loading/loading";
-            private Texture2D loadingTexture;
-            private bool useLoadingTexture = true;
+            private const bool EnableProgrammaticLoadingOverlay = true;
+            private bool showLoadingScreen = true;
             private int  FramesLoaded = 0;
             private int  FramesToWait;
+            private LoadingScreenOverlay m_LoadingOverlay;
 
             // ── Settings & loader ────────────────────────────────────────────────
 
@@ -81,6 +81,11 @@ namespace SensorFlex.Player.Subsystem
             private Material  m_CameraMaterial;
             private Vector4   m_CurrentIntrinsics = new Vector4(935.3f, 935.3f, 960f, 720f);
             private XRCameraConfiguration m_CurrentConfiguration;
+            private bool m_LoggedFirstTryGetFrame;
+            private bool m_LoggedPreloadComplete;
+            private bool m_LoggedFirstTextureSet;
+            private bool m_LoggedEmptyTextureDescriptors;
+            private bool m_LoggedNonEmptyTextureDescriptors;
 
 
             // ── Material / camera ────────────────────────────────────────────────
@@ -139,18 +144,19 @@ namespace SensorFlex.Player.Subsystem
 
             public override void Start()
             {
-                useLoadingTexture = true;
-                FramesLoaded = 0;
+                Debug.Log("[SF] CameraDataProvider.Start()");
 
-                loadingTexture = Resources.Load<Texture2D>(LoadingTextureResourcePath);
-                if (loadingTexture == null)
+                showLoadingScreen = true;
+                FramesLoaded = 0;
+                m_LoggedFirstTryGetFrame = false;
+                m_LoggedPreloadComplete = false;
+                m_LoggedFirstTextureSet = false;
+                m_LoggedEmptyTextureDescriptors = false;
+                m_LoggedNonEmptyTextureDescriptors = false;
+                if (EnableProgrammaticLoadingOverlay)
                 {
-                    Debug.LogWarning("[SF] Loading texture not found at Resources/Loading/loading — skipping loading screen.");
-                    useLoadingTexture = false;
-                }
-                else
-                {
-                    m_CurrentTexture = loadingTexture;
+                    m_LoadingOverlay ??= new LoadingScreenOverlay();
+                    m_LoadingOverlay.Show("Loading SensorFlex frames...");
                 }
 
                 settings = SensorFlexSettings.RuntimeInstance ?? Resources.Load<SensorFlexSettings>("SensorFlexSettings");
@@ -171,6 +177,8 @@ namespace SensorFlex.Player.Subsystem
                     : 1.0 / Math.Max(1, settings.targetFPS);
 
                 Debug.Log($"[SF] Mode={settings.frameSourceMode} FramesToWait={FramesToWait} BufferSize={maxFramesToLoad} FrameInterval={frameInterval:F4}s");
+                if (EnableProgrammaticLoadingOverlay)
+                    UpdateLoadingScreenText();
 
                 nextFrameTime = Time.realtimeSinceStartupAsDouble + frameInterval;
             }
@@ -195,12 +203,22 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 // FileSystem / WebSocket
-                if (useLoadingTexture)
+                if (showLoadingScreen)
                 {
                     FramesLoaded++;
+                    if (EnableProgrammaticLoadingOverlay)
+                        UpdateLoadingScreenText();
                     if (FramesLoaded >= FramesToWait && m_Loader.IsReady)
                     {
-                        useLoadingTexture = false;
+                        if (!m_LoggedPreloadComplete)
+                        {
+                            Debug.Log($"[SF] Preload complete (FileSystem/WebSocket). FramesLoaded={FramesLoaded} FramesToWait={FramesToWait} TotalFrames={m_Loader.Frames?.Length ?? 0}");
+                            m_LoggedPreloadComplete = true;
+                        }
+
+                        showLoadingScreen = false;
+                        if (EnableProgrammaticLoadingOverlay)
+                            m_LoadingOverlay?.Hide();
                         index = 0;
                         LoadFrame(0);
                         OnFramesReady?.Invoke();
@@ -221,12 +239,22 @@ namespace SensorFlex.Player.Subsystem
             {
                 m_Loader.DrainUploadQueue();
 
-                if (useLoadingTexture)
+                if (showLoadingScreen)
                 {
                     FramesLoaded++;
+                    if (EnableProgrammaticLoadingOverlay)
+                        UpdateLoadingScreenText();
                     if (FramesLoaded >= FramesToWait && m_Loader.IsReady)
                     {
-                        useLoadingTexture = false;
+                        if (!m_LoggedPreloadComplete)
+                        {
+                            Debug.Log($"[SF] Preload complete (ZIP). FramesLoaded={FramesLoaded} FramesToWait={FramesToWait} TotalFrames={m_Loader.TotalFrames} PlayHead={m_Loader.PlayHead}");
+                            m_LoggedPreloadComplete = true;
+                        }
+
+                        showLoadingScreen = false;
+                        if (EnableProgrammaticLoadingOverlay)
+                            m_LoadingOverlay?.Hide();
                         PlayZipSlot(0);
                         OnFramesReady?.Invoke();
                     }
@@ -248,16 +276,38 @@ namespace SensorFlex.Player.Subsystem
             {
                 var frames = m_Loader?.Frames;
                 if (frames == null || i < 0 || i >= frames.Length) return;
-                m_CurrentTexture = frames[i];
+                SetCurrentTexture(frames[i]);
                 timestampNs += (long)(frameInterval * 1_000_000_000L);
             }
 
             void PlayZipSlot(int slot)
             {
-                m_CurrentTexture    = m_Loader.Frames[slot];
+                SetCurrentTexture(m_Loader.Frames[slot]);
                 timestampNs        += (long)(frameInterval * 1_000_000_000L);
                 m_CurrentIntrinsics = m_Loader.Intrinsics[slot];
                 PoseBridge.SetUnityPose(ArchiveIOUtils.ConvertToUnityPose(m_Loader.Poses[slot], m_Loader.CoordConvMatrix));
+            }
+
+            void SetCurrentTexture(Texture2D texture)
+            {
+                m_CurrentTexture = texture;
+                if (!m_LoggedFirstTextureSet && m_CurrentTexture != null)
+                {
+                    Debug.Log($"[SF] First playback texture set: {m_CurrentTexture.width}x{m_CurrentTexture.height} name={m_CurrentTexture.name}");
+                    m_LoggedFirstTextureSet = true;
+                }
+
+                if (m_CameraMaterial != null)
+                    m_CameraMaterial.mainTexture = m_CurrentTexture;
+            }
+
+            void UpdateLoadingScreenText()
+            {
+                if (m_LoadingOverlay == null || settings == null) return;
+
+                string source = settings.frameSourceMode.ToString();
+                int progress = Math.Min(FramesLoaded, FramesToWait);
+                m_LoadingOverlay.Show($"Loading SensorFlex frames...\nSource: {source}\nWarmup: {progress}/{FramesToWait}");
             }
 
 
@@ -265,6 +315,12 @@ namespace SensorFlex.Player.Subsystem
 
             public override bool TryGetFrame(XRCameraParams cameraParams, out XRCameraFrame frame)
             {
+                if (!m_LoggedFirstTryGetFrame)
+                {
+                    Debug.Log($"[SF] TryGetFrame started. Screen={cameraParams.screenWidth}x{cameraParams.screenHeight} Loading={showLoadingScreen} Ready={m_Loader?.IsReady ?? false}");
+                    m_LoggedFirstTryGetFrame = true;
+                }
+
                 UpdateFrameIfNeeded();
 
                 float aspect = (float)cameraParams.screenWidth / cameraParams.screenHeight;
@@ -288,14 +344,26 @@ namespace SensorFlex.Player.Subsystem
             public override NativeArray<XRTextureDescriptor> GetTextureDescriptors(XRTextureDescriptor defaultDescriptor, Allocator allocator)
             {
                 if (m_CurrentTexture == null)
+                {
+                    if (!m_LoggedEmptyTextureDescriptors)
+                    {
+                        Debug.Log($"[SF] GetTextureDescriptors returned empty. Loading={showLoadingScreen} Ready={m_Loader?.IsReady ?? false}");
+                        m_LoggedEmptyTextureDescriptors = true;
+                    }
+
                     return new NativeArray<XRTextureDescriptor>(0, allocator);
+                }
 
                 var descriptors = new NativeArray<XRTextureDescriptor>(1, allocator);
                 descriptors[0] = new XRTextureDescriptor(
                     m_CurrentTexture.GetNativeTexturePtr(),
                     m_CurrentTexture.width, m_CurrentTexture.height, m_CurrentTexture.mipmapCount,
-                    m_CurrentTexture.format, Shader.PropertyToID("_MainTex"), 0, TextureDimension.Tex2D);
-                // Debug.Log($"[SF] GetTextureDescriptors: {descriptors[0].width}x{descriptors[0].height}");
+                    m_CurrentTexture.format, Shader.PropertyToID("_MainTex"), 0, XRTextureType.Texture2D);
+                if (!m_LoggedNonEmptyTextureDescriptors)
+                {
+                    Debug.Log($"[SF] GetTextureDescriptors publishing {descriptors[0].width}x{descriptors[0].height} texture.");
+                    m_LoggedNonEmptyTextureDescriptors = true;
+                }
                 return descriptors;
             }
 
@@ -319,8 +387,100 @@ namespace SensorFlex.Player.Subsystem
                     m_Loader = null;
                 }
 
-                m_CurrentTexture = null;
+                showLoadingScreen = false;
+                if (EnableProgrammaticLoadingOverlay)
+                {
+                    m_LoadingOverlay?.Dispose();
+                    m_LoadingOverlay = null;
+                }
+                SetCurrentTexture(null);
                 PoseBridge.Clear();
+            }
+        }
+
+        sealed class LoadingScreenOverlay : IDisposable
+        {
+            readonly GameObject m_GameObject;
+            readonly LoadingScreenOverlayBehaviour m_Behaviour;
+
+            public LoadingScreenOverlay()
+            {
+                m_GameObject = new GameObject("SensorFlexLoadingOverlay")
+                {
+                    hideFlags = HideFlags.HideAndDontSave
+                };
+
+                UnityEngine.Object.DontDestroyOnLoad(m_GameObject);
+                m_Behaviour = m_GameObject.AddComponent<LoadingScreenOverlayBehaviour>();
+            }
+
+            public void Show(string message)
+            {
+                if (m_Behaviour == null) return;
+                m_Behaviour.Message = message;
+                m_Behaviour.Visible = true;
+            }
+
+            public void Hide()
+            {
+                if (m_Behaviour != null)
+                    m_Behaviour.Visible = false;
+            }
+
+            public void Dispose()
+            {
+                if (m_GameObject != null)
+                    UnityEngine.Object.Destroy(m_GameObject);
+            }
+        }
+
+        sealed class LoadingScreenOverlayBehaviour : MonoBehaviour
+        {
+            GUIStyle m_LabelStyle;
+            GUIStyle m_BackgroundStyle;
+
+            public bool Visible { get; set; }
+            public string Message { get; set; } = "Loading...";
+
+            void OnGUI()
+            {
+                if (!Visible) return;
+
+                EnsureStyles();
+
+                var fullRect = new Rect(0f, 0f, Screen.width, Screen.height);
+                GUI.Box(fullRect, GUIContent.none, m_BackgroundStyle);
+
+                var labelRect = new Rect(0f, 0f, Screen.width, Screen.height);
+                GUI.Label(labelRect, Message, m_LabelStyle);
+            }
+
+            void EnsureStyles()
+            {
+                if (m_LabelStyle != null && m_BackgroundStyle != null) return;
+
+                m_LabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    fontSize = Mathf.Max(24, Screen.height / 24),
+                    wordWrap = true,
+                    richText = false
+                };
+                m_LabelStyle.normal.textColor = Color.white;
+
+                var background = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                background.SetPixel(0, 0, new Color(0f, 0f, 0f, 0.85f));
+                background.Apply();
+
+                m_BackgroundStyle = new GUIStyle(GUI.skin.box);
+                m_BackgroundStyle.normal.background = background;
+                m_BackgroundStyle.border = new RectOffset(0, 0, 0, 0);
+            }
+
+            void OnDestroy()
+            {
+                if (m_BackgroundStyle?.normal.background != null)
+                    UnityEngine.Object.Destroy(m_BackgroundStyle.normal.background);
             }
         }
     }

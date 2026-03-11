@@ -148,7 +148,7 @@ namespace SensorFlex.Player.Subsystem
                     m_CurrentDepthTexture.format,
                     Shader.PropertyToID("_EnvironmentDepth"),
                     0,
-                    TextureDimension.Tex2D
+                    XRTextureType.Texture2D
                 );
 
                 return true;
