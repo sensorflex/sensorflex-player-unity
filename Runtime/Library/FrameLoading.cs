@@ -15,6 +15,7 @@ namespace SensorFlex.Player.Library
     {
         double FrameInterval { get; set; }
         Matrix4x4 CoordConvMatrix { get; set; }
+        bool UseScanNetPoseOpticalAxisFix { get; set; }
         int TotalFrames { get; set; }
         int BufSize { get; }
         bool IsReady { get; set; }
@@ -38,6 +39,7 @@ namespace SensorFlex.Player.Library
 
         public double FrameInterval { get; set; }
         public Matrix4x4 CoordConvMatrix { get; set; } = Matrix4x4.identity;
+        public bool UseScanNetPoseOpticalAxisFix { get; set; }
         public int TotalFrames { get; set; } = int.MaxValue;
         public int BufSize { get; }
         public bool IsReady { get; set; }
@@ -112,6 +114,7 @@ namespace SensorFlex.Player.Library
 
         public double FrameInterval => m_State.FrameInterval;
         public Matrix4x4 CoordConvMatrix => m_State.CoordConvMatrix;
+        public bool UseScanNetPoseOpticalAxisFix => m_State.UseScanNetPoseOpticalAxisFix;
         public int TotalFrames => m_State.TotalFrames;
         public int BufSize => m_State.BufSize;
         public bool IsReady => m_State.IsReady;
@@ -341,6 +344,9 @@ namespace SensorFlex.Player.Library
 
     internal sealed class ZipFrameLoaderBackend : IFrameLoaderBackend
     {
+        const string FormatVersion10 = "1.0";
+        const string FormatVersion11 = "1.1";
+
         struct LoadedFrame
         {
             public int FrameIndex;
@@ -434,12 +440,23 @@ namespace SensorFlex.Player.Library
                 state.CoordConvMatrix = meta.coordinate_system != null
                     ? ArchiveIOUtils.ComputeConversionMatrix(meta.coordinate_system.handedness, meta.coordinate_system.forward)
                     : Matrix4x4.identity;
+                state.UseScanNetPoseOpticalAxisFix = string.Equals(meta.source?.dataset, "ScanNet++", StringComparison.OrdinalIgnoreCase);
 
-                if (!ValidateArchiveLayout(archive, meta.scene_id, state.TotalFrames))
+                if (!ValidateArchiveLayout(archive, meta, state.TotalFrames))
                     return null;
 
                 Debug.Log($"[SF] ZIP meta: scene={meta.scene_id} frames={state.TotalFrames} fps={meta.fps} " +
                           $"handedness={meta.coordinate_system?.handedness} forward={meta.coordinate_system?.forward}");
+
+                var scannedMeshMeta = ArchiveIOUtils.GetScannedMeshMeta(meta);
+                if (scannedMeshMeta != null && !string.IsNullOrEmpty(scannedMeshMeta.path))
+                {
+                    Debug.Log($"[SF] ZIP scanned mesh declared at '{scannedMeshMeta.path}' (format={scannedMeshMeta.format}, frame={scannedMeshMeta.coordinate_frame}).");
+                }
+
+                if (state.UseScanNetPoseOpticalAxisFix)
+                    Debug.Log("[SF] Enabling ScanNet++ pose optical-axis fix.");
+
                 return meta.scene_id;
             }
             catch (Exception e)
@@ -449,8 +466,23 @@ namespace SensorFlex.Player.Library
             }
         }
 
-        static bool ValidateArchiveLayout(ZipArchive archive, string sceneId, int totalFrames)
+        static bool ValidateArchiveLayout(ZipArchive archive, ArchiveIOUtils.SceneMetaJson meta, int totalFrames)
         {
+            if (meta == null)
+            {
+                Debug.LogError("[SF] ZIP format error: scene meta.json could not be parsed.");
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(meta.format_version) &&
+                meta.format_version != FormatVersion10 &&
+                meta.format_version != FormatVersion11)
+            {
+                Debug.LogError($"[SF] ZIP format error: unsupported format_version '{meta.format_version}'. Supported versions are {FormatVersion10} and {FormatVersion11}.");
+                return false;
+            }
+
+            string sceneId = meta.scene_id;
             if (string.IsNullOrEmpty(sceneId))
             {
                 Debug.LogError("[SF] ZIP format error: scene_id is missing from scene meta.json.");
@@ -462,6 +494,30 @@ namespace SensorFlex.Player.Library
             {
                 Debug.LogError($"[SF] ZIP format error: expected scene metadata at '{sceneMetaPath}'.");
                 return false;
+            }
+
+            var scannedMeshMeta = ArchiveIOUtils.GetScannedMeshMeta(meta);
+            if (scannedMeshMeta != null && !string.IsNullOrEmpty(scannedMeshMeta.path))
+            {
+                string meshPath = $"{sceneId}/{scannedMeshMeta.path}";
+                if (archive.GetEntry(meshPath) == null)
+                {
+                    Debug.LogError($"[SF] ZIP format error: scene meta declares scanned mesh '{meshPath}', but that entry is missing from the archive.");
+                    return false;
+                }
+
+                if (!string.Equals(scannedMeshMeta.format, "ply", StringComparison.OrdinalIgnoreCase))
+                {
+                    Debug.LogError($"[SF] ZIP format error: unsupported scanned_mesh format '{scannedMeshMeta.format}'. Expected 'ply'.");
+                    return false;
+                }
+
+                if (!string.IsNullOrEmpty(scannedMeshMeta.coordinate_frame) &&
+                    !string.Equals(scannedMeshMeta.coordinate_frame, "pose", StringComparison.OrdinalIgnoreCase))
+                {
+                    Debug.LogError($"[SF] ZIP format error: unsupported scanned_mesh coordinate_frame '{scannedMeshMeta.coordinate_frame}'. Expected 'pose'.");
+                    return false;
+                }
             }
 
             int sampleCount = Math.Min(totalFrames, 3);

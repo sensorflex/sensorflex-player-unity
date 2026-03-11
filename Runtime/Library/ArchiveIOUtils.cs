@@ -18,7 +18,19 @@ namespace SensorFlex.Player.Library
         // ── Scene meta.json DTOs ─────────────────────────────────────────────────
 
         [Serializable] internal class CoordSystem   { public string handedness; public string forward; public string up; }
-        [Serializable] internal class SceneMetaJson { public string scene_id; public int n_frames; public int fps; public CoordSystem coordinate_system; }
+        [Serializable] internal class MeshMetaJson  { public string path; public string format; public string units; public string coordinate_frame; }
+        [Serializable] internal class SourceMetaJson { public string dataset; public string device; public string capture_framework; }
+        [Serializable] internal class SceneMetaJson
+        {
+            public string format_version;
+            public string scene_id;
+            public int n_frames;
+            public int fps;
+            public CoordSystem coordinate_system;
+            public SourceMetaJson source;
+            public MeshMetaJson scanned_mesh;
+            public MeshMetaJson mesh;
+        }
 
         // ── ZIP entry reading ────────────────────────────────────────────────────
 
@@ -99,16 +111,25 @@ namespace SensorFlex.Player.Library
         /// <summary>
         /// Converts a camera-to-world matrix from a source coordinate system to
         /// a Unity <see cref="Pose"/> using the symmetric formula M_unity = C * M_source * C.
+        /// ScanNet++ archives currently require an extra optical-axis sign flip
+        /// when deriving the Unity forward vector from the converted matrix.
         /// </summary>
-        internal static Pose ConvertToUnityPose(Matrix4x4 source, Matrix4x4 c)
+        internal static Pose ConvertToUnityPose(Matrix4x4 source, Matrix4x4 c, bool useScanNetPoseOpticalAxisFix = false)
         {
             var m        = c * source * c;
             var position = new Vector3(m.m03, m.m13, m.m23);
-            var forward  = new Vector3(m.m02, m.m12, m.m22); // col-2 = camera +Z in Unity
+            var forward  = useScanNetPoseOpticalAxisFix
+                ? new Vector3(-m.m02, -m.m12, -m.m22)
+                : new Vector3(m.m02, m.m12, m.m22);
             var up       = new Vector3(m.m01, m.m11, m.m21);
             if (forward == Vector3.zero || up == Vector3.zero)
                 return new Pose(position, Quaternion.identity);
             return new Pose(position, Quaternion.LookRotation(forward, up));
+        }
+
+        internal static MeshMetaJson GetScannedMeshMeta(SceneMetaJson meta)
+        {
+            return meta?.scanned_mesh ?? meta?.mesh;
         }
     }
 }

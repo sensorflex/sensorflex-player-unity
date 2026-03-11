@@ -1,7 +1,7 @@
 # ScanNet++ iPhone ZIP Format
 
-Self-contained `.zip` archive encoding RGB, depth, pose, intrinsics, and
-IMU data from a single ScanNet++ iPhone scene capture.
+Self-contained `.zip` archive encoding RGB, depth, pose, intrinsics, IMU,
+and the aligned scanned mesh from a single ScanNet++ iPhone scene capture.
 
 Source data: ScanNet++ dataset (iPhone capture via ARKit on iPhone 13 Pro).
 Converter: `main.py` in this repo.
@@ -13,6 +13,8 @@ Converter: `main.py` in this repo.
 ```
 <scene_id>/
 ├── meta.json
+├── scanned_mesh/
+│   └── mesh_aligned_0.05.ply
 └── frames/
     ├── 000000/
     │   ├── rgb.jpg
@@ -29,8 +31,10 @@ Converter: `main.py` in this repo.
 - Frame folders are zero-padded 6-digit integers: `000000` through `N-1`.
 - Frame index is the authoritative key — all four files inside a folder
   describe the same instant in time.
+- `scanned_mesh/mesh_aligned_0.05.ply` is optional. When present, it is in the
+  exact same world coordinate frame as each frame's `pose`.
 - `rgb.jpg` and `mask.png` use `ZIP_STORED` (already compressed internally).
-- `depth.bin` and `meta.json` use `ZIP_DEFLATED`.
+- `depth.bin`, `meta.json`, and `mesh_aligned_0.05.ply` use `ZIP_DEFLATED`.
 
 ---
 
@@ -41,7 +45,7 @@ conventions used throughout the archive. All fields are machine-readable.
 
 ```json
 {
-  "format_version": "1.0",
+  "format_version": "1.1",
   "scene_id": "02455b3d20",
   "n_frames": 10632,
   "fps": 60,
@@ -63,13 +67,21 @@ conventions used throughout the archive. All fields are machine-readable.
     "convention": "camera_to_world",
     "scale": "metric",
     "layout": "row_major_4x4",
-    "note": "aligned to laser-scan mesh coordinate space (mesh_aligned_0.05.ply)"
+    "note": "aligned to packaged scanned mesh coordinate space when scanned_mesh is present"
   },
   "pose_raw": {
     "convention": "camera_to_world",
     "scale": "arbitrary",
     "layout": "row_major_4x4",
     "note": "ARKit original pose, arbitrary origin and scale"
+  },
+
+  "scanned_mesh": {
+    "path": "scanned_mesh/mesh_aligned_0.05.ply",
+    "format": "ply",
+    "units": "meters",
+    "coordinate_frame": "pose",
+    "note": "offline scanned mesh vertices are in the same world coordinate frame as frame meta.json pose"
   },
 
   "camera": {
@@ -149,12 +161,17 @@ Unity also uses `+Y`. Unreal uses `+Z`.
 into the scene. ARKit uses `-Z` (OpenGL convention). Unity uses `+Z`.
 
 **`pose.scale`** — `"metric"` means translation values are in real-world meters,
-aligned to the laser-scan mesh. `pose_raw.scale` is `"arbitrary"` — ARKit
-does not guarantee real-world units there.
+aligned to the packaged laser-scan mesh when `scanned_mesh` is present. `pose_raw.scale`
+is `"arbitrary"` — ARKit does not guarantee real-world units there.
 
 **`pose.convention`** — `"camera_to_world"` means the matrix transforms a
 point from camera space into world space. `"world_to_camera"` is the
 inverse (view matrix).
+
+**`scanned_mesh.coordinate_frame`** — `"pose"` means scanned mesh vertices
+and the exported `pose` matrices share the same world frame, so no extra
+alignment transform should be applied before rendering cameras against the
+scanned mesh.
 
 **`camera.intrinsic_variation`** — `"per_frame"` means the K matrix in
 each frame's `meta.json` must be used for that frame; a single static K
@@ -202,6 +219,26 @@ K_depth.cy = K_rgb.cy * (192 / 1440)
 
 ---
 
+## scanned_mesh/mesh_aligned_0.05.ply
+
+- **Format:** PLY mesh
+- **Units:** Meters
+- **Coordinate frame:** Same world frame as per-frame `pose`
+- **Type:** Offline scanned mesh
+- **Source:** `scans/mesh_aligned_0.05.ply` from the ScanNet++ scene
+
+If this file is present, frame `pose` is guaranteed to be the aligned,
+metric camera-to-world transform for this scanned mesh. `pose_raw` remains
+the original ARKit trajectory and should not be mixed with the scanned mesh
+without an external alignment step.
+
+This naming distinguishes the static ScanNet++ reconstruction from any
+future AR-framework mesh stream. A future real-time mesh sequence should be
+stored under a separate top-level key and path rather than overloading
+`scanned_mesh`.
+
+---
+
 ## frame meta.json
 
 Per-frame metadata. Located at `<scene_id>/frames/<NNNNNN>/meta.json`.
@@ -238,17 +275,18 @@ Per-frame metadata. Located at `<scene_id>/frames/<NNNNNN>/meta.json`.
 
 ### Fields
 
-| Field       | Type              | Description                                                              |
-| ----------- | ----------------- | ------------------------------------------------------------------------ |
-| `timestamp` | float64           | ARKit capture timestamp, seconds since device boot                       |
-| `pose`      | float32\[4\]\[4\] | Camera-to-world, **metric**, aligned to laser-scan mesh coordinate space |
-| `pose_raw`  | float32\[4\]\[4\] | Camera-to-world, ARKit original, arbitrary origin and scale              |
-| `intrinsic` | float32\[3\]\[3\] | RGB camera K matrix at this frame's focal length                         |
-| `imu`       | object            | IMU measurement (see `imu.fields` in scene `meta.json`)                  |
+| Field       | Type              | Description                                                               |
+| ----------- | ----------------- | ------------------------------------------------------------------------- |
+| `timestamp` | float64           | ARKit capture timestamp, seconds since device boot                        |
+| `pose`      | float32\[4\]\[4\] | Camera-to-world, **metric**, aligned to the scanned mesh coordinate space |
+| `pose_raw`  | float32\[4\]\[4\] | Camera-to-world, ARKit original, arbitrary origin and scale               |
+| `intrinsic` | float32\[3\]\[3\] | RGB camera K matrix at this frame's focal length                          |
+| `imu`       | object            | IMU measurement (see `imu.fields` in scene `meta.json`)                   |
 
-`pose` is in the same coordinate frame as `scans/mesh_aligned_0.05.ply`.
+`pose` is in the same coordinate frame as `scanned_mesh/mesh_aligned_0.05.ply` when
+that file is present in the archive.
 `pose_raw` is useful when only relative camera motion matters (e.g. NeRF, SLAM)
-and you don't need alignment to the mesh.
+and you don't need alignment to the scanned mesh.
 
 ---
 

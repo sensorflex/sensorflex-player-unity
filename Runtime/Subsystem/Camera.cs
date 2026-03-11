@@ -41,6 +41,13 @@ namespace SensorFlex.Player.Subsystem
 
         public class CameraDataProvider : Provider
         {
+            enum StartupStage
+            {
+                LoadingSceneMesh,
+                WarmingUpFrames,
+                Playing
+            }
+
             // ── Events ───────────────────────────────────────────────────────────
 
             /// <summary>Fires on the main thread each time a new frame is displayed.</summary>
@@ -68,6 +75,8 @@ namespace SensorFlex.Player.Subsystem
             private int  FramesLoaded = 0;
             private int  FramesToWait;
             private LoadingScreenOverlay m_LoadingOverlay;
+            private StartupStage m_StartupStage;
+            private ScannedSceneMeshLoadOperation m_ScannedSceneMeshLoadOperation;
 
             // ── Settings & loader ────────────────────────────────────────────────
 
@@ -167,18 +176,18 @@ namespace SensorFlex.Player.Subsystem
                 maxFramesToLoad = settings.preloadFrameCount;
                 FramesToWait    = Math.Max(1, maxFramesToLoad / 4);
 
-                m_Loader = new FrameLoader();
-                m_Loader.Start(settings, maxFramesToLoad, FramesToWait);
-                ActiveLoader = m_Loader;
-
-                // ZIP: FPS is read from meta.json inside the archive
-                frameInterval = settings.frameSourceMode == SensorFlexSettings.FrameSourceMode.Zip
-                    ? m_Loader.FrameInterval
-                    : 1.0 / Math.Max(1, settings.targetFPS);
-
-                Debug.Log($"[SF] Mode={settings.frameSourceMode} FramesToWait={FramesToWait} BufferSize={maxFramesToLoad} FrameInterval={frameInterval:F4}s");
-                if (EnableProgrammaticLoadingOverlay)
-                    UpdateLoadingScreenText();
+                ScannedSceneMeshBridge.Clear();
+                m_ScannedSceneMeshLoadOperation = ScannedSceneMeshLoadOperation.Start(settings);
+                if (m_ScannedSceneMeshLoadOperation != null)
+                {
+                    m_StartupStage = StartupStage.LoadingSceneMesh;
+                    if (EnableProgrammaticLoadingOverlay)
+                        m_LoadingOverlay.Show("Loading scanned mesh...");
+                }
+                else
+                {
+                    BeginFrameWarmup();
+                }
 
                 nextFrameTime = Time.realtimeSinceStartupAsDouble + frameInterval;
             }
@@ -188,6 +197,12 @@ namespace SensorFlex.Player.Subsystem
 
             void UpdateFrameIfNeeded()
             {
+                if (m_StartupStage == StartupStage.LoadingSceneMesh)
+                {
+                    TryCompleteSceneMeshLoad();
+                    return;
+                }
+
                 if (m_Loader == null) return;
 
                 if (settings.frameSourceMode == SensorFlexSettings.FrameSourceMode.WebSocket)
@@ -203,7 +218,7 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 // FileSystem / WebSocket
-                if (showLoadingScreen)
+                if (m_StartupStage == StartupStage.WarmingUpFrames && showLoadingScreen)
                 {
                     FramesLoaded++;
                     if (EnableProgrammaticLoadingOverlay)
@@ -219,6 +234,7 @@ namespace SensorFlex.Player.Subsystem
                         showLoadingScreen = false;
                         if (EnableProgrammaticLoadingOverlay)
                             m_LoadingOverlay?.Hide();
+                        m_StartupStage = StartupStage.Playing;
                         index = 0;
                         LoadFrame(0);
                         OnFramesReady?.Invoke();
@@ -239,7 +255,7 @@ namespace SensorFlex.Player.Subsystem
             {
                 m_Loader.DrainUploadQueue();
 
-                if (showLoadingScreen)
+                if (m_StartupStage == StartupStage.WarmingUpFrames && showLoadingScreen)
                 {
                     FramesLoaded++;
                     if (EnableProgrammaticLoadingOverlay)
@@ -255,6 +271,7 @@ namespace SensorFlex.Player.Subsystem
                         showLoadingScreen = false;
                         if (EnableProgrammaticLoadingOverlay)
                             m_LoadingOverlay?.Hide();
+                        m_StartupStage = StartupStage.Playing;
                         PlayZipSlot(0);
                         OnFramesReady?.Invoke();
                     }
@@ -285,7 +302,49 @@ namespace SensorFlex.Player.Subsystem
                 SetCurrentTexture(m_Loader.Frames[slot]);
                 timestampNs        += (long)(frameInterval * 1_000_000_000L);
                 m_CurrentIntrinsics = m_Loader.Intrinsics[slot];
-                PoseBridge.SetUnityPose(ArchiveIOUtils.ConvertToUnityPose(m_Loader.Poses[slot], m_Loader.CoordConvMatrix));
+                PoseBridge.SetUnityPose(ArchiveIOUtils.ConvertToUnityPose(
+                    m_Loader.Poses[slot],
+                    m_Loader.CoordConvMatrix,
+                    m_Loader.UseScanNetPoseOpticalAxisFix));
+            }
+
+            void TryCompleteSceneMeshLoad()
+            {
+                if (m_ScannedSceneMeshLoadOperation == null)
+                {
+                    BeginFrameWarmup();
+                    return;
+                }
+
+                if (!m_ScannedSceneMeshLoadOperation.TryComplete(out var mesh))
+                    return;
+
+                if (mesh != null)
+                {
+                    ScannedSceneMeshBridge.SetMesh(mesh, m_ScannedSceneMeshLoadOperation.SceneId);
+                    Debug.Log($"[SF] Scanned mesh ready: vertices={mesh.vertexCount} triangles={mesh.triangles.Length / 3}");
+                }
+
+                m_ScannedSceneMeshLoadOperation = null;
+                BeginFrameWarmup();
+            }
+
+            void BeginFrameWarmup()
+            {
+                m_StartupStage = StartupStage.WarmingUpFrames;
+                showLoadingScreen = true;
+
+                m_Loader = new FrameLoader();
+                m_Loader.Start(settings, maxFramesToLoad, FramesToWait);
+                ActiveLoader = m_Loader;
+
+                frameInterval = settings.frameSourceMode == SensorFlexSettings.FrameSourceMode.Zip
+                    ? m_Loader.FrameInterval
+                    : 1.0 / Math.Max(1, settings.targetFPS);
+
+                Debug.Log($"[SF] Mode={settings.frameSourceMode} FramesToWait={FramesToWait} BufferSize={maxFramesToLoad} FrameInterval={frameInterval:F4}s");
+                if (EnableProgrammaticLoadingOverlay)
+                    UpdateLoadingScreenText();
             }
 
             void SetCurrentTexture(Texture2D texture)
@@ -307,6 +366,12 @@ namespace SensorFlex.Player.Subsystem
 
                 string source = settings.frameSourceMode.ToString();
                 int progress = Math.Min(FramesLoaded, FramesToWait);
+                if (m_StartupStage == StartupStage.LoadingSceneMesh)
+                {
+                    m_LoadingOverlay.Show($"Loading scanned mesh...\nSource: {source}");
+                    return;
+                }
+
                 m_LoadingOverlay.Show($"Loading SensorFlex frames...\nSource: {source}\nWarmup: {progress}/{FramesToWait}");
             }
 
@@ -379,6 +444,7 @@ namespace SensorFlex.Player.Subsystem
             public override async void Stop()
             {
                 ActiveLoader = null;
+                m_ScannedSceneMeshLoadOperation = null;
 
                 if (m_Loader != null)
                 {
@@ -394,6 +460,7 @@ namespace SensorFlex.Player.Subsystem
                     m_LoadingOverlay = null;
                 }
                 SetCurrentTexture(null);
+                ScannedSceneMeshBridge.Clear();
                 PoseBridge.Clear();
             }
         }
