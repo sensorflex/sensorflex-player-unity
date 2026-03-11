@@ -26,7 +26,7 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
   Provides a minimal `XRSessionSubsystem` implementation so the package can participate in the XR lifecycle.
 
 - `Runtime/PoseBridge.cs`
-  Acts as a simple static pose handoff for host app code that wants the current camera pose without going through AR Foundation pose APIs.
+  Acts as a public static pose handoff for host app code that wants the current camera pose without going through AR Foundation pose APIs.
 
 - `Runtime/Library/FrameLoading.cs`
   Contains the frame-loading orchestration and backend abstraction:
@@ -50,64 +50,107 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
 6. The camera provider advances playback on Unity's main thread and publishes:
    - color textures via `XRCameraSubsystem`
    - intrinsics via `TryGetIntrinsics`
-   - pose via `PoseBridge`
-7. `OcclusionSubsystem` optionally publishes depth textures in lock-step with camera playback.
+   - camera timing and frame state via AR Foundation camera APIs
+   - pose via the public `PoseBridge` API
+7. `OcclusionSubsystem` optionally publishes depth textures in lock-step with camera playback through `XROcclusionSubsystem`.
+8. Host applications primarily consume data through AR Foundation managers and components; `PoseBridge` is a secondary direct API for pose only.
 
 ## ASCII Diagram
 
 ```text
-                           +----------------------+
-                           | SensorFlexSettings   |
-                           | source/fps/buffering |
-                           +----------+-----------+
-                                      |
-                                      v
-+-------------------+        +--------+---------+
-| Unity XR Manager  | -----> | Loader            |
-| / AR Foundation   |        | XRLoaderHelper    |
-+---------+---------+        +---+-----------+---+
-          |                      |           |
-          |                      |           |
-          v                      v           v
- +--------+---------+   +--------+----+  +---+----------------+
- | CameraSubsystem  |   | Session      |  | OcclusionSubsystem |
- | playback owner   |   | Subsystem    |  | depth provider     |
- +--------+---------+   +-------------+  +---+----------------+
-          |                                   ^
-          | OnFramesReady                     |
-          v                                   |
- +--------+-----------------------------------+---+
- | FrameLoader facade                             |
- | exposes Frames / Poses / Intrinsics / Depth    |
- +-------------------+----------------------------+
-                     |
-                     v
-        +------------+------------------------------+
-        | shared loader state + backend interface   |
-        +------------+------------------------------+
-                     |
-     +---------------+-------------------------------+
-     |               |                               |
-     v               v                               v
- +---+----------+ +--+----------------+ +------------+-----------+
- | FileSystem   | | WebSocket         | | ZIP                    |
- | preload imgs | | network preload   | | threaded stream/ring   |
- +---+----------+ +--+----------------+ +------------+-----------+
-     |               |                               |
-     +---------------+---------------+---------------+
-                                     |
-                                     v
-                        +------------+------------+
-                        | ArchiveIOUtils          |
-                        | zip/json/matrix helpers |
-                        +------------+------------+
-                                     |
-                                     v
-                              +------+------+
-                              | PoseBridge  |
-                              | latest pose |
-                              +-------------+
++--------------------------------------------------------------------------+
+| Internal Runtime                                                         |
+|                                                                          |
+|  +----------------------+                                                |
+|  | SensorFlexSettings   |                                                |
+|  | source/fps/buffering |                                                |
+|  +----------+-----------+                                                |
+|             |                                                            |
+|             v                                                            |
+|  +-------------------+        +------------------+                       |
+|  | Unity XR Manager  | -----> | Loader           |                       |
+|  | / AR Foundation   |        | XRLoaderHelper   |                       |
+|  +---------+---------+        +---+----------+---+                       |
+|            |                      |          |                           |
+|            v                      v          v                           |
+|   +--------+---------+   +--------+----+  +---+----------------+         |
+|   | CameraSubsystem  |   | Session      |  | OcclusionSubsystem |        |
+|   | playback owner   |   | Subsystem    |  | depth provider     |        |
+|   +----+--------+----+   +-------------+  +---+----------------+         |
+|        |        |                               ^                        |
+|        |        | PoseBridge.SetUnityPose()     | OnFramesReady          |
+|        |        v                               |                        |
+|        |   +----+-----------+                   |                        |
+|        |   | PoseBridge     |                   |                        |
+|        |   | public pose API|                   |                        |
+|        |   +----------------+                   |                        |
+|        |                                                                 |
+|   +----+---------------------------------------+                         |
+|   | FrameLoader facade                         |                         |
+|   | exposes Frames / Poses / Intrinsics /     |                          |
+|   | Depth to runtime subsystems               |                          |
+|   +-------------------+-----------------------+                          |
+|                       |                                                  |
+|                       v                                                  |
+|          +------------+------------------------------+                   |
+|          | shared loader state + backend interface   |                   |
+|          +------------+------------------------------+                   |
+|                       |                                                  |
+|       +---------------+-------------------------------+                  |
+|       |               |                               |                  |
+|       v               v                               v                  |
+|   +---+----------+ +--+----------------+ +------------+-----------+      |
+|   | FileSystem   | | WebSocket         | | ZIP                    |      |
+|   | preload imgs | | network preload   | | threaded stream/ring   |      |
+|   +---+----------+ +--+----------------+ +------------+-----------+      |
+|       |               |                               |                  |
+|       +---------------+---------------+---------------+                  |
+|                                       |                                  |
+|                                       v                                  |
+|                          +------------+------------+                     |
+|                          | ArchiveIOUtils          |                     |
+|                          | zip/json/matrix helpers |                     |
+|                          +-------------------------+                     |
+|                                                                          |
++--------------------------------------------------------------------------+
+
+  Primary host integration                  Secondary shortcut API
+
+  +----------------------------------+      +----------------------+
+  | AR Foundation managers/components|      | Host app / game code |
+  | ARCameraManager, background,     |      | reading PoseBridge   |
+  | occlusion, XR consumers          |      +----------+-----------+
+  +----------------+-----------------+                 ^
+                   ^                                   |
+                   |                                   |
+     +-------------+--------------+                    |
+     |                            |                    |
+     | camera color / intrinsics  | latest Unity pose |
+     | frame state / session      | via PoseBridge    |
+     | environment depth          |                    |
+     |                            |                    |
+  +--+---------------+     +------+-------+            |
+  | CameraSubsystem  |     | PoseBridge   |------------+
+  +------------------+     | public API   |
+                           +--------------+
+
+  +--------------------+    +------------------+
+  | OcclusionSubsystem |    | SessionSubsystem |
+  +--------------------+    +------------------+
+
+  `CameraSubsystem`, `OcclusionSubsystem`, and `SessionSubsystem`
+  publish into the AR Foundation-facing path.
 ```
+
+## Host Application Integration
+
+There are two outward-facing publication paths:
+
+- Primary path: AR Foundation
+  The package publishes camera color, intrinsics, session state, and optional environment depth through XR subsystem APIs. Host applications should generally consume this data through standard AR Foundation managers and rendering components.
+
+- Secondary path: `PoseBridge`
+  `PoseBridge` is a direct static API for the latest Unity-space pose. It exists as a convenience escape hatch, but it is narrower and more coupled than the AR Foundation path.
 
 ## Backend Responsibilities
 
@@ -143,5 +186,5 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
 
 - `OcclusionSubsystem` currently supports file-system depth textures only.
 - ZIP depth is already loaded into `FrameLoader.DepthBins`, but not yet surfaced through `XROcclusionSubsystem`.
-- `PoseBridge` is package-global state; it is simple, but not session-isolated.
+- `PoseBridge` is a public API surface, but its backing state is package-global and not session-isolated.
 - `FrameLoader` is the integration seam between framework code and IO backends. New sources should be added as new `IFrameLoaderBackend` implementations rather than expanding the facade.
