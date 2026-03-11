@@ -69,6 +69,7 @@
     },
     "dotnet.defaultSolution": "sensorflex-unity-testbed.slnx",
     "cSpell.words": [
-        "sensorflex"
+        "sensorflex",
+        "Cinfo"
     ]
 }
