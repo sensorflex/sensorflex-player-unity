@@ -257,7 +257,7 @@ namespace SensorFlex.Player.Subsystem
                 m_CurrentTexture    = m_Loader.Frames[slot];
                 timestampNs        += (long)(frameInterval * 1_000_000_000L);
                 m_CurrentIntrinsics = m_Loader.Intrinsics[slot];
-                PoseBridge.SetUnityPose(IO.ConvertToUnityPose(m_Loader.Poses[slot], m_Loader.CoordConvMatrix));
+                PoseBridge.SetUnityPose(ArchiveIOUtils.ConvertToUnityPose(m_Loader.Poses[slot], m_Loader.CoordConvMatrix));
             }
 
 
