@@ -7,8 +7,9 @@ namespace SensorFlex.Player
 {
     public class Loader : XRLoaderHelper
     {
-        static List<XRCameraSubsystemDescriptor> cameraDescriptors = new();
-        static List<XRSessionSubsystemDescriptor> sessionDescriptors = new();
+        static readonly List<XRCameraSubsystemDescriptor> cameraDescriptors = new();
+        static readonly List<XRSessionSubsystemDescriptor> sessionDescriptors = new();
+        static readonly List<XROcclusionSubsystemDescriptor> occlusionDescriptors = new();
 
         public override bool Initialize()
         {
@@ -16,14 +17,17 @@ namespace SensorFlex.Player
 
             SubsystemManager.GetSubsystemDescriptors(cameraDescriptors);
             SubsystemManager.GetSubsystemDescriptors(sessionDescriptors);
+            SubsystemManager.GetSubsystemDescriptors(occlusionDescriptors);
 
             CreateSubsystem<XRCameraSubsystemDescriptor, XRCameraSubsystem>(cameraDescriptors, "SensorFlex-Camera");
             CreateSubsystem<XRSessionSubsystemDescriptor, XRSessionSubsystem>(sessionDescriptors, "SensorFlex-Session");
+            CreateSubsystem<XROcclusionSubsystemDescriptor, XROcclusionSubsystem>(occlusionDescriptors, "SensorFlex-Occlusion");
 
             var cam = GetLoadedSubsystem<XRCameraSubsystem>();
             var ses = GetLoadedSubsystem<XRSessionSubsystem>();
+            var occ = GetLoadedSubsystem<XROcclusionSubsystem>();
 
-            Debug.Log($"[SF] Created subsystems: Camera={(cam != null)}, Session={(ses != null)}");
+            Debug.Log($"[SF] Created subsystems: Camera={cam != null}, Session={ses != null}, Occlusion={occ != null}");
 
             return cam != null && ses != null;
         }
@@ -33,6 +37,7 @@ namespace SensorFlex.Player
             Debug.Log("[SF] Loader Start");
             StartSubsystem<XRCameraSubsystem>();
             StartSubsystem<XRSessionSubsystem>();
+            StartSubsystem<XROcclusionSubsystem>();
             return true;
         }
 
@@ -41,6 +46,7 @@ namespace SensorFlex.Player
             Debug.Log("[SF] Loader Stop");
             StopSubsystem<XRCameraSubsystem>();
             StopSubsystem<XRSessionSubsystem>();
+            StopSubsystem<XROcclusionSubsystem>();
             return true;
         }
 
@@ -49,6 +55,7 @@ namespace SensorFlex.Player
             Debug.Log("[SF] Loader Deinitialize");
             DestroySubsystem<XRCameraSubsystem>();
             DestroySubsystem<XRSessionSubsystem>();
+            DestroySubsystem<XROcclusionSubsystem>();
             return true;
         }
     }
