@@ -111,14 +111,14 @@ namespace SensorFlex.Player.Library
         /// <summary>
         /// Converts a camera-to-world matrix from a source coordinate system to
         /// a Unity <see cref="Pose"/> using the symmetric formula M_unity = C * M_source * C.
-        /// ScanNet++ archives currently require an extra optical-axis sign flip
-        /// when deriving the Unity forward vector from the converted matrix.
+        /// Archives that declare -Z-forward camera optics need the forward vector
+        /// derived from the converted matrix to follow that optical-axis convention.
         /// </summary>
-        internal static Pose ConvertToUnityPose(Matrix4x4 source, Matrix4x4 c, bool useScanNetPoseOpticalAxisFix = false)
+        internal static Pose ConvertToUnityPose(Matrix4x4 source, Matrix4x4 c, bool useNegativeZForwardOpticalAxis = false)
         {
             var m        = c * source * c;
             var position = new Vector3(m.m03, m.m13, m.m23);
-            var forward  = useScanNetPoseOpticalAxisFix
+            var forward  = useNegativeZForwardOpticalAxis
                 ? new Vector3(-m.m02, -m.m12, -m.m22)
                 : new Vector3(m.m02, m.m12, m.m22);
             var up       = new Vector3(m.m01, m.m11, m.m21);

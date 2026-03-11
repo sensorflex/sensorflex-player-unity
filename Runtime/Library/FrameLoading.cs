@@ -15,7 +15,7 @@ namespace SensorFlex.Player.Library
     {
         double FrameInterval { get; set; }
         Matrix4x4 CoordConvMatrix { get; set; }
-        bool UseScanNetPoseOpticalAxisFix { get; set; }
+        bool UseNegativeZForwardOpticalAxis { get; set; }
         int TotalFrames { get; set; }
         int BufSize { get; }
         bool IsReady { get; set; }
@@ -39,7 +39,7 @@ namespace SensorFlex.Player.Library
 
         public double FrameInterval { get; set; }
         public Matrix4x4 CoordConvMatrix { get; set; } = Matrix4x4.identity;
-        public bool UseScanNetPoseOpticalAxisFix { get; set; }
+        public bool UseNegativeZForwardOpticalAxis { get; set; }
         public int TotalFrames { get; set; } = int.MaxValue;
         public int BufSize { get; }
         public bool IsReady { get; set; }
@@ -114,7 +114,7 @@ namespace SensorFlex.Player.Library
 
         public double FrameInterval => m_State.FrameInterval;
         public Matrix4x4 CoordConvMatrix => m_State.CoordConvMatrix;
-        public bool UseScanNetPoseOpticalAxisFix => m_State.UseScanNetPoseOpticalAxisFix;
+        public bool UseNegativeZForwardOpticalAxis => m_State.UseNegativeZForwardOpticalAxis;
         public int TotalFrames => m_State.TotalFrames;
         public int BufSize => m_State.BufSize;
         public bool IsReady => m_State.IsReady;
@@ -440,7 +440,7 @@ namespace SensorFlex.Player.Library
                 state.CoordConvMatrix = meta.coordinate_system != null
                     ? ArchiveIOUtils.ComputeConversionMatrix(meta.coordinate_system.handedness, meta.coordinate_system.forward)
                     : Matrix4x4.identity;
-                state.UseScanNetPoseOpticalAxisFix = string.Equals(meta.source?.dataset, "ScanNet++", StringComparison.OrdinalIgnoreCase);
+                state.UseNegativeZForwardOpticalAxis = string.Equals(meta.coordinate_system?.forward, "-Z", StringComparison.OrdinalIgnoreCase);
 
                 if (!ValidateArchiveLayout(archive, meta, state.TotalFrames))
                     return null;
@@ -454,8 +454,8 @@ namespace SensorFlex.Player.Library
                     Debug.Log($"[SF] ZIP scanned mesh declared at '{scannedMeshMeta.path}' (format={scannedMeshMeta.format}, frame={scannedMeshMeta.coordinate_frame}).");
                 }
 
-                if (state.UseScanNetPoseOpticalAxisFix)
-                    Debug.Log("[SF] Enabling ScanNet++ pose optical-axis fix.");
+                if (state.UseNegativeZForwardOpticalAxis)
+                    Debug.Log("[SF] Enabling -Z-forward pose optical-axis handling from archive metadata.");
 
                 return meta.scene_id;
             }

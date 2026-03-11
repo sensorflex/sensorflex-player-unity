@@ -305,7 +305,7 @@ namespace SensorFlex.Player.Subsystem
                 PoseBridge.SetUnityPose(ArchiveIOUtils.ConvertToUnityPose(
                     m_Loader.Poses[slot],
                     m_Loader.CoordConvMatrix,
-                    m_Loader.UseScanNetPoseOpticalAxisFix));
+                    m_Loader.UseNegativeZForwardOpticalAxis));
             }
 
             void TryCompleteSceneMeshLoad()
