@@ -1,0 +1,20 @@
+{
+    "name": "SensorFlex.Player.Runtime",
+    "rootNamespace": "SensorFlex.Player",
+    "references": [
+        "Unity.XR.Management",
+        "Unity.XR.ARSubsystems",
+        "Unity.XR.CoreUtils",
+        "Unity.XR.ARFoundation",
+        "endel.nativewebsocket"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

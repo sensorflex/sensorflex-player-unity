@@ -1,0 +1,13 @@
+{
+  "name": "SensorFlex.Player.Editor",
+  "rootNamespace": "SensorFlex.Player",
+  "references": [
+    "SensorFlex.Player.Runtime",
+    "Unity.XR.Management.Editor"
+  ],
+  "includePlatforms": [ "Editor" ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true,
+  "noEngineReferences": false
+}

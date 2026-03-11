@@ -1,0 +1,13 @@
+{
+    "name": "com.sensorflex.player.unity",
+    "displayName": "SensorFlex Unity Player",
+    "version": "0.0.1",
+    "unity": "6000.0",
+    "license": "Apache-2.0",
+    "description": "An Unity player client to stream data using SensorFlex.",
+    "author": {
+        "name": "Yiqin Zhao",
+        "email": "yzigm@rit.edu"
+    },
+    "dependencies": {}
+}
