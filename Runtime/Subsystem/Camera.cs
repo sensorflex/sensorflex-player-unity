@@ -5,7 +5,6 @@ using UnityEngine.Rendering;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.XR.ARSubsystems;
-using System.Text;
 using NativeWebSocket;
 
 namespace SensorFlex.Player.Subsystem
@@ -47,17 +46,10 @@ namespace SensorFlex.Player.Subsystem
             private WebSocket webSocket;
 
             private bool isWebSocketPreloadStarted;
-            private bool isWebSocketConnected;
-
             private bool framesAreReady;
             private int framesExpectedCount;
             private int framesReceivedCount;
 
-            public int width = 512;
-            public int height = 256;
-            public Color backgroundColor = Color.blue;
-            public Color textColor = Color.white;
-            public Font font;
             public static event System.Action OnFramesReady;
 
             List<string> frames = new();
@@ -71,7 +63,6 @@ namespace SensorFlex.Player.Subsystem
             int maxFramesToLoad;
 
             private const string LoadingTextureResourcePath = "Loading/loading";
-            private Texture2D m_FrameTexture;
             private Texture2D loadingTexture;
             private bool useLoadingTexture = true;
             private int FramesLoaded = 0;
@@ -168,7 +159,8 @@ namespace SensorFlex.Player.Subsystem
                 loadingTexture = Resources.Load<Texture2D>(LoadingTextureResourcePath);
                 if (loadingTexture == null)
                 {
-                    Debug.LogError("[SF] Could not load loading texture at Resources/Loading/loading.png");
+                    Debug.LogWarning("[SF] Loading texture not found at Resources/Loading/loading — skipping loading screen.");
+                    useLoadingTexture = false;
                 }
                 else
                 {
@@ -244,37 +236,6 @@ namespace SensorFlex.Player.Subsystem
                 Debug.Log($"[SF] found {frames.Count} frames in {folder}");
 
             }
-            Texture2D GenerateTexture(string text)
-            {
-                // Create RenderTexture
-                RenderTexture rt = new RenderTexture(width, height, 0);
-                RenderTexture.active = rt;
-
-                // Clear background
-                GL.Clear(true, true, backgroundColor);
-
-                // Prepare GUI
-                GUIStyle style = new GUIStyle();
-                style.font = font;
-                style.fontSize = 48;
-                style.alignment = TextAnchor.MiddleCenter;
-                style.normal.textColor = textColor;
-
-                // Draw text
-                GUI.matrix = Matrix4x4.identity;
-                GUI.Label(new Rect(0, 0, width, height), text, style);
-
-                // Read pixels into Texture2D
-                Texture2D tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
-                tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-                tex.Apply();
-
-                // Cleanup
-                RenderTexture.active = null;
-                rt.Release();
-
-                return tex;
-            }
             void PreloadFrames()
             {
                 framesAreReady = false;
@@ -338,7 +299,6 @@ namespace SensorFlex.Player.Subsystem
 
                 webSocket.OnOpen += () =>
                 {
-                    isWebSocketConnected = true;
                     Debug.Log("[SF] WebSocket connected.");
 
                     // Request frames from server
@@ -354,7 +314,6 @@ namespace SensorFlex.Player.Subsystem
 
                 webSocket.OnClose += (closeCode) =>
                 {
-                    isWebSocketConnected = false;
                     Debug.Log("[SF] WebSocket closed: " + closeCode);
                 };
 
@@ -447,9 +406,9 @@ namespace SensorFlex.Player.Subsystem
                         useLoadingTexture = false;
                         index = 0;
                         LoadFrame(index);
+                        OnFramesReady?.Invoke();
                     }
 
-                    OnFramesReady?.Invoke();
                     return;
                 }
 
@@ -519,8 +478,6 @@ namespace SensorFlex.Player.Subsystem
                 XRTextureDescriptor defaultDescriptor,
                 Allocator allocator)
             {
-
-                UpdateFrameIfNeeded();
                 if (m_CurrentTexture == null)
                 {
                     return new NativeArray<XRTextureDescriptor>(0, allocator);
@@ -591,7 +548,6 @@ namespace SensorFlex.Player.Subsystem
                     }
                 }
 
-                m_FrameTexture = null;
                 m_CurrentTexture = null;
             }
 
