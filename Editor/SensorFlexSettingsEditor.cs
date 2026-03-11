@@ -22,16 +22,16 @@ namespace SensorFlexPlayer.Editor
                 EditorGUILayout.LabelField("WebSocket", EditorStyles.boldLabel);
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("webSocketUrl"));
             }
-            else if (mode == SensorFlexSettings.FrameSourceMode.TarGz)
+            else if (mode == SensorFlexSettings.FrameSourceMode.Zip)
             {
-                EditorGUILayout.LabelField("Tar.gz", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("ZIP", EditorStyles.boldLabel);
 
-                var pathProp = serializedObject.FindProperty("tarGzFilePath");
+                var pathProp = serializedObject.FindProperty("zipFilePath");
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.TextField("Archive", pathProp.stringValue);
                 if (GUILayout.Button("Browse…", GUILayout.Width(70)))
                 {
-                    string picked = EditorUtility.OpenFilePanel("Select tar.gz archive", "", "gz");
+                    string picked = EditorUtility.OpenFilePanel("Select ZIP archive", "", "zip");
                     if (!string.IsNullOrEmpty(picked))
                         pathProp.stringValue = picked;
                 }
@@ -44,11 +44,11 @@ namespace SensorFlexPlayer.Editor
             }
 
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Playback / Loading", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Playback", EditorStyles.boldLabel);
             EditorGUILayout.PropertyField(serializedObject.FindProperty("preloadFrameCount"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("framesToWaitForLoadingScreen"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("targetFPS"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("loopSequence"));
+            if (mode != SensorFlexSettings.FrameSourceMode.Zip)
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("targetFPS"));
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Depth (Occlusion)", EditorStyles.boldLabel);

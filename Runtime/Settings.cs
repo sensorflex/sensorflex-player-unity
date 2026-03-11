@@ -11,36 +11,26 @@ namespace SensorFlex.Player
         {
             FileSystem = 0,
             WebSocket = 1,
-            TarGz = 2
+            Zip = 2
         }
 
-        [Header("Frame Source")]
         public FrameSourceMode frameSourceMode = FrameSourceMode.FileSystem;
 
-        [Header("WebSocket")]
         public string webSocketUrl = "ws://localhost:3000";
 
-        [Header("Tar.gz")]
-        [Tooltip("Path to the ScanNet++ .tar.gz archive. Can be absolute or relative to StreamingAssets.")]
-        public string tarGzFilePath = "";
+        [Tooltip("Path to the ScanNet++ .zip archive. Can be absolute or relative to StreamingAssets.")]
+        public string zipFilePath = "";
 
-        [Header("Playback / Loading")]
         [Min(1)]
         public int preloadFrameCount = 120;
 
-        [Min(0)]
-        public int framesToWaitForLoadingScreen = 10;
+        public bool loopSequence = true;
 
-        // Keep your existing fields too (used by file-system mode and timing):
-        [Header("File System / Timing")]
         public string imageFolder = "DiskCam";
 
         [Min(1f)]
         public float targetFPS = 30f;
 
-        public bool loopSequence = true;
-
-        [Header("Depth (Occlusion)")]
         [Tooltip("Enable the XROcclusionSubsystem to supply environment depth textures.")]
         public bool depthEnabled = false;
 
