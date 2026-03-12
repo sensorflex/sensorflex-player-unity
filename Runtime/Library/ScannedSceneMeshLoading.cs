@@ -122,6 +122,8 @@ namespace SensorFlex.Player.Library
             mesh.indexFormat = data.Vertices.Length > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
             mesh.vertices = data.Vertices;
             mesh.triangles = data.Triangles;
+            if (data.Colors != null && data.Colors.Length == data.Vertices.Length)
+                mesh.colors32 = data.Colors;
 
             if (data.Normals != null && data.Normals.Length == data.Vertices.Length)
                 mesh.normals = data.Normals;
@@ -137,6 +139,7 @@ namespace SensorFlex.Player.Library
     {
         public Vector3[] Vertices;
         public Vector3[] Normals;
+        public Color32[] Colors;
         public int[] Triangles;
     }
 
@@ -271,11 +274,12 @@ namespace SensorFlex.Player.Library
             using var reader = new StringReader(Encoding.ASCII.GetString(bytes, header.HeaderBytes, bytes.Length - header.HeaderBytes));
             var vertices = new Vector3[header.VertexCount];
             Vector3[] normals = TryAllocateNormals(header);
+            Color32[] colors = TryAllocateColors(header);
 
             for (int i = 0; i < header.VertexCount; i++)
             {
                 var parts = ReadTokens(reader);
-                vertices[i] = ReadVertex(parts, header.VertexProperties, ref normals, i);
+                vertices[i] = ReadVertex(parts, header.VertexProperties, ref normals, ref colors, i);
             }
 
             var triangles = new List<int>(header.FaceCount * 3);
@@ -287,19 +291,20 @@ namespace SensorFlex.Player.Library
             }
 
             ApplyCoordinateConversion(vertices, normals, triangles, coordConvMatrix);
-            return new ScannedSceneMeshData { Vertices = vertices, Normals = normals, Triangles = triangles.ToArray() };
+            return new ScannedSceneMeshData { Vertices = vertices, Normals = normals, Colors = colors, Triangles = triangles.ToArray() };
         }
 
         static ScannedSceneMeshData ParseBinaryLittleEndian(byte[] bytes, Header header, Matrix4x4 coordConvMatrix)
         {
             var vertices = new Vector3[header.VertexCount];
             Vector3[] normals = TryAllocateNormals(header);
+            Color32[] colors = TryAllocateColors(header);
 
             using var ms = new MemoryStream(bytes, header.HeaderBytes, bytes.Length - header.HeaderBytes, false);
             using var br = new BinaryReader(ms);
 
             for (int i = 0; i < header.VertexCount; i++)
-                vertices[i] = ReadBinaryVertex(br, header.VertexProperties, ref normals, i);
+                vertices[i] = ReadBinaryVertex(br, header.VertexProperties, ref normals, ref colors, i);
 
             var triangles = new List<int>(header.FaceCount * 3);
             for (int i = 0; i < header.FaceCount; i++)
@@ -313,7 +318,7 @@ namespace SensorFlex.Player.Library
             }
 
             ApplyCoordinateConversion(vertices, normals, triangles, coordConvMatrix);
-            return new ScannedSceneMeshData { Vertices = vertices, Normals = normals, Triangles = triangles.ToArray() };
+            return new ScannedSceneMeshData { Vertices = vertices, Normals = normals, Colors = colors, Triangles = triangles.ToArray() };
         }
 
         static string[] ReadTokens(StringReader reader)
@@ -346,52 +351,83 @@ namespace SensorFlex.Player.Library
             return hasNormals ? new Vector3[header.VertexCount] : null;
         }
 
-        static Vector3 ReadVertex(string[] parts, List<PlyProperty> properties, ref Vector3[] normals, int vertexIndex)
+        static Color32[] TryAllocateColors(Header header)
+        {
+            bool hasRed = false, hasGreen = false, hasBlue = false;
+            foreach (var property in header.VertexProperties)
+            {
+                switch (property.Name)
+                {
+                    case "red": hasRed = true; break;
+                    case "green": hasGreen = true; break;
+                    case "blue": hasBlue = true; break;
+                }
+            }
+
+            return hasRed && hasGreen && hasBlue ? new Color32[header.VertexCount] : null;
+        }
+
+        static Vector3 ReadVertex(string[] parts, List<PlyProperty> properties, ref Vector3[] normals, ref Color32[] colors, int vertexIndex)
         {
             float x = 0f, y = 0f, z = 0f;
             float nx = 0f, ny = 0f, nz = 0f;
+            byte red = 255, green = 255, blue = 255, alpha = 255;
 
             for (int i = 0; i < properties.Count && i < parts.Length; i++)
             {
-                float value = float.Parse(parts[i], CultureInfo.InvariantCulture);
                 switch (properties[i].Name)
                 {
-                    case "x": x = value; break;
-                    case "y": y = value; break;
-                    case "z": z = value; break;
-                    case "nx": nx = value; break;
-                    case "ny": ny = value; break;
-                    case "nz": nz = value; break;
+                    case "x": x = float.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "y": y = float.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "z": z = float.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "nx": nx = float.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "ny": ny = float.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "nz": nz = float.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "red": red = byte.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "green": green = byte.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "blue": blue = byte.Parse(parts[i], CultureInfo.InvariantCulture); break;
+                    case "alpha": alpha = byte.Parse(parts[i], CultureInfo.InvariantCulture); break;
                 }
             }
 
             if (normals != null)
                 normals[vertexIndex] = new Vector3(nx, ny, nz);
+            if (colors != null)
+                colors[vertexIndex] = new Color32(red, green, blue, alpha);
 
             return new Vector3(x, y, z);
         }
 
-        static Vector3 ReadBinaryVertex(BinaryReader br, List<PlyProperty> properties, ref Vector3[] normals, int vertexIndex)
+        static Vector3 ReadBinaryVertex(BinaryReader br, List<PlyProperty> properties, ref Vector3[] normals, ref Color32[] colors, int vertexIndex)
         {
             float x = 0f, y = 0f, z = 0f;
             float nx = 0f, ny = 0f, nz = 0f;
+            byte red = 255, green = 255, blue = 255, alpha = 255;
 
             for (int i = 0; i < properties.Count; i++)
             {
-                float value = (float)ReadScalar(br, properties[i].Type);
                 switch (properties[i].Name)
                 {
-                    case "x": x = value; break;
-                    case "y": y = value; break;
-                    case "z": z = value; break;
-                    case "nx": nx = value; break;
-                    case "ny": ny = value; break;
-                    case "nz": nz = value; break;
+                    case "x": x = (float)ReadScalar(br, properties[i].Type); break;
+                    case "y": y = (float)ReadScalar(br, properties[i].Type); break;
+                    case "z": z = (float)ReadScalar(br, properties[i].Type); break;
+                    case "nx": nx = (float)ReadScalar(br, properties[i].Type); break;
+                    case "ny": ny = (float)ReadScalar(br, properties[i].Type); break;
+                    case "nz": nz = (float)ReadScalar(br, properties[i].Type); break;
+                    case "red": red = (byte)ReadScalar(br, properties[i].Type); break;
+                    case "green": green = (byte)ReadScalar(br, properties[i].Type); break;
+                    case "blue": blue = (byte)ReadScalar(br, properties[i].Type); break;
+                    case "alpha": alpha = (byte)ReadScalar(br, properties[i].Type); break;
+                    default:
+                        ReadScalar(br, properties[i].Type);
+                        break;
                 }
             }
 
             if (normals != null)
                 normals[vertexIndex] = new Vector3(nx, ny, nz);
+            if (colors != null)
+                colors[vertexIndex] = new Color32(red, green, blue, alpha);
 
             return new Vector3(x, y, z);
         }

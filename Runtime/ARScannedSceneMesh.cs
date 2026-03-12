@@ -77,7 +77,8 @@ namespace SensorFlex.Player
             if (m_RuntimeMaterial != null)
                 return m_RuntimeMaterial;
 
-            Shader shader = Shader.Find("Universal Render Pipeline/Lit")
+            Shader shader = Shader.Find("SensorFlex/VertexColor")
+                ?? Shader.Find("Universal Render Pipeline/Lit")
                 ?? Shader.Find("Standard")
                 ?? Shader.Find("Unlit/Color");
             if (shader == null)
