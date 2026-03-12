@@ -129,6 +129,47 @@ namespace SensorFlex.Player.Library
             return new Pose(position, Quaternion.LookRotation(forward, up));
         }
 
+        /// <summary>
+        /// Builds a Unity projection matrix from pinhole camera intrinsics
+        /// (fx, fy, cx, cy) defined over an image of the given width and height.
+        /// Intrinsic coordinates are assumed to use image-space origin at top-left.
+        /// </summary>
+        internal static Matrix4x4 ComputeProjectionMatrix(Vector4 intrinsics, int imageWidth, int imageHeight, float nearClipPlane, float farClipPlane)
+        {
+            float fx = intrinsics.x;
+            float fy = intrinsics.y;
+            float cx = intrinsics.z;
+            float cy = intrinsics.w;
+
+            if (fx <= 0f || fy <= 0f || imageWidth <= 0 || imageHeight <= 0)
+                return Matrix4x4.Perspective(60f, (float)imageWidth / Mathf.Max(1, imageHeight), nearClipPlane, farClipPlane);
+
+            float left = -cx * nearClipPlane / fx;
+            float right = (imageWidth - cx) * nearClipPlane / fx;
+            float top = cy * nearClipPlane / fy;
+            float bottom = -(imageHeight - cy) * nearClipPlane / fy;
+
+            return PerspectiveOffCenter(left, right, bottom, top, nearClipPlane, farClipPlane);
+        }
+
+        static Matrix4x4 PerspectiveOffCenter(float left, float right, float bottom, float top, float near, float far)
+        {
+            float x = 2f * near / (right - left);
+            float y = 2f * near / (top - bottom);
+            float a = (right + left) / (right - left);
+            float b = (top + bottom) / (top - bottom);
+            float c = -(far + near) / (far - near);
+            float d = -(2f * far * near) / (far - near);
+            float e = -1f;
+
+            var m = new Matrix4x4();
+            m[0, 0] = x;  m[0, 1] = 0f; m[0, 2] = a;  m[0, 3] = 0f;
+            m[1, 0] = 0f; m[1, 1] = y;  m[1, 2] = b;  m[1, 3] = 0f;
+            m[2, 0] = 0f; m[2, 1] = 0f; m[2, 2] = c;  m[2, 3] = d;
+            m[3, 0] = 0f; m[3, 1] = 0f; m[3, 2] = e;  m[3, 3] = 0f;
+            return m;
+        }
+
         internal static MeshMetaJson GetScannedMeshMeta(SceneMetaJson meta)
         {
             return meta?.scanned_mesh ?? meta?.mesh;

@@ -392,11 +392,18 @@ namespace SensorFlex.Player.Subsystem
 
                 UpdateFrameIfNeeded();
 
-                float aspect = (float)cameraParams.screenWidth / cameraParams.screenHeight;
                 ARSensorFlexSession.GetPreferredClipPlanes(out float nearClipPlane, out float farClipPlane);
+                int projectionWidth = m_CurrentTexture != null ? m_CurrentTexture.width : 1920;
+                int projectionHeight = m_CurrentTexture != null ? m_CurrentTexture.height : 1440;
+                var projectionMatrix = ArchiveIOUtils.ComputeProjectionMatrix(
+                    m_CurrentIntrinsics,
+                    projectionWidth,
+                    projectionHeight,
+                    nearClipPlane,
+                    farClipPlane);
                 frame = new XRCameraFrame(
                     timestampNs, 0f, 0f, Color.black,
-                    Matrix4x4.Perspective(60f, aspect, nearClipPlane, farClipPlane),
+                    projectionMatrix,
                     Matrix4x4.identity,
                     TrackingState.Tracking, IntPtr.Zero,
                     XRCameraFrameProperties.Timestamp | XRCameraFrameProperties.ProjectionMatrix | XRCameraFrameProperties.DisplayMatrix,
