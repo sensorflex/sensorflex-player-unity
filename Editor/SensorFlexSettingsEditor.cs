@@ -56,6 +56,18 @@ namespace SensorFlexPlayer.Editor
             if (mode == SensorFlexSettings.FrameSourceMode.FileSystem)
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("depthFolder"));
 
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Session Alignment", EditorStyles.boldLabel);
+            var sessionAlignmentProp = serializedObject.FindProperty("sessionAlignment");
+            var enabledProp = sessionAlignmentProp.FindPropertyRelative("enabled");
+            EditorGUILayout.PropertyField(enabledProp, new GUIContent("Apply To XR Origin"));
+            if (enabledProp.boolValue)
+            {
+                EditorGUILayout.PropertyField(sessionAlignmentProp.FindPropertyRelative("positionOffset"));
+                EditorGUILayout.PropertyField(sessionAlignmentProp.FindPropertyRelative("rotationEuler"));
+                EditorGUILayout.PropertyField(sessionAlignmentProp.FindPropertyRelative("uniformScale"));
+            }
+
             serializedObject.ApplyModifiedProperties();
         }
     }

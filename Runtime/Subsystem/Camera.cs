@@ -173,6 +173,8 @@ namespace SensorFlex.Player.Subsystem
 
                 if (settings == null) { Debug.LogError("[SF] SensorFlexSettings.asset not found in Resources/"); return; }
 
+                SessionAlignmentApplier.ApplyToActiveXROrigin(settings);
+
                 maxFramesToLoad = settings.preloadFrameCount;
                 FramesToWait    = Math.Max(1, maxFramesToLoad / 4);
 

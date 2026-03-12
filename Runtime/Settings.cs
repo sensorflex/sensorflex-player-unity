@@ -7,6 +7,23 @@ namespace SensorFlex.Player
     [CreateAssetMenu(menuName = "SensorFlex Player/Settings", fileName = "SensorFlexSettings")]
     public class SensorFlexSettings : ScriptableObject
     {
+        [System.Serializable]
+        public class SessionAlignmentSettings
+        {
+            [Tooltip("Apply this transform to the active XROrigin when the SensorFlex session starts.")]
+            public bool enabled = false;
+
+            [Tooltip("Local position offset applied to the XROrigin.")]
+            public Vector3 positionOffset = Vector3.zero;
+
+            [Tooltip("Local Euler rotation offset, in degrees, applied to the XROrigin.")]
+            public Vector3 rotationEuler = Vector3.zero;
+
+            [Min(0.0001f)]
+            [Tooltip("Uniform local scale applied to the XROrigin.")]
+            public float uniformScale = 1f;
+        }
+
         public enum FrameSourceMode
         {
             FileSystem = 0,
@@ -36,6 +53,9 @@ namespace SensorFlex.Player
 
         [Tooltip("StreamingAssets-relative folder containing depth images (PNG/JPG, one per color frame, same sorted order).")]
         public string depthFolder = "DiskCamDepth";
+
+        [Header("Session Alignment")]
+        public SessionAlignmentSettings sessionAlignment = new();
 
         public static SensorFlexSettings RuntimeInstance { get; private set; }
 
