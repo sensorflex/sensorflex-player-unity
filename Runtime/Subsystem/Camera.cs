@@ -124,13 +124,15 @@ namespace SensorFlex.Player.Subsystem
 
             void CreateCameraMaterial()
             {
-                Shader shader = Shader.Find("Unlit/Texture") ?? Shader.Find("UI/Default");
+                Shader shader = Shader.Find("SensorFlex/CameraBackground")
+                    ?? Shader.Find("Unlit/Texture")
+                    ?? Shader.Find("UI/Default");
                 if (shader != null)
                 {
                     m_CameraMaterial = new Material(shader)
                     {
                         name = "CustomARCameraMaterial",
-                        renderQueue = 1000
+                        renderQueue = (int)RenderQueue.Background
                     };
                     Debug.Log("[CustomAR] Created camera material with shader: " + shader.name);
                 }
@@ -391,9 +393,10 @@ namespace SensorFlex.Player.Subsystem
                 UpdateFrameIfNeeded();
 
                 float aspect = (float)cameraParams.screenWidth / cameraParams.screenHeight;
+                ARSensorFlexSession.GetPreferredClipPlanes(out float nearClipPlane, out float farClipPlane);
                 frame = new XRCameraFrame(
                     timestampNs, 0f, 0f, Color.black,
-                    Matrix4x4.Perspective(60f, aspect, 0.1f, 100f),
+                    Matrix4x4.Perspective(60f, aspect, nearClipPlane, farClipPlane),
                     Matrix4x4.identity,
                     TrackingState.Tracking, IntPtr.Zero,
                     XRCameraFrameProperties.Timestamp | XRCameraFrameProperties.ProjectionMatrix | XRCameraFrameProperties.DisplayMatrix,

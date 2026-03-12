@@ -14,6 +14,11 @@ namespace SensorFlex.Player
     [AddComponentMenu("XR/SensorFlex/AR SensorFlex Session")]
     public sealed class ARSensorFlexSession : MonoBehaviour
     {
+        [Header("Camera Clip Planes")]
+        [SerializeField] bool m_OverrideCameraClipPlanes = true;
+        [SerializeField] float m_NearClipPlane = 0.01f;
+        [SerializeField] float m_FarClipPlane = 1000f;
+
         [Header("Replay Camera")]
         [SerializeField] bool m_DriveReplayCamera = true;
         [SerializeField] Transform m_ReplayTargetOverride;
@@ -54,6 +59,7 @@ namespace SensorFlex.Player
             ScannedSceneMeshBridge.OnMeshReady += ApplyMesh;
 
             ApplySessionAlignment(SensorFlexSettings.RuntimeInstance ?? Resources.Load<SensorFlexSettings>("SensorFlexSettings"));
+            ApplyCameraClipPlanes();
 
             if (PoseBridge.HasPose)
                 ApplyPose(PoseBridge.LatestPose);
@@ -149,6 +155,32 @@ namespace SensorFlex.Player
                 m_RuntimeMaterial.color = new Color(0.75f, 0.78f, 0.82f, 1f);
 
             return m_RuntimeMaterial;
+        }
+
+        void ApplyCameraClipPlanes()
+        {
+            if (!m_OverrideCameraClipPlanes || m_XROrigin?.Camera == null)
+                return;
+
+            var camera = m_XROrigin.Camera;
+            camera.nearClipPlane = Mathf.Max(0.001f, m_NearClipPlane);
+            camera.farClipPlane = Mathf.Max(camera.nearClipPlane + 0.01f, m_FarClipPlane);
+        }
+
+        internal static void GetPreferredClipPlanes(out float nearClipPlane, out float farClipPlane)
+        {
+            nearClipPlane = 0.01f;
+            farClipPlane = 1000f;
+
+            foreach (var session in Object.FindObjectsByType<ARSensorFlexSession>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (session == null || !session.m_OverrideCameraClipPlanes)
+                    continue;
+
+                nearClipPlane = Mathf.Max(0.001f, session.m_NearClipPlane);
+                farClipPlane = Mathf.Max(nearClipPlane + 0.01f, session.m_FarClipPlane);
+                return;
+            }
         }
 
         internal static void ApplySessionAlignment(SensorFlexSettings settings)

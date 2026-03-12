@@ -121,7 +121,9 @@ namespace SensorFlex.Player.Library
             var forward  = useNegativeZForwardOpticalAxis
                 ? new Vector3(-m.m02, -m.m12, -m.m22)
                 : new Vector3(m.m02, m.m12, m.m22);
-            var up       = new Vector3(m.m01, m.m11, m.m21);
+            var up       = useNegativeZForwardOpticalAxis
+                ? new Vector3(-m.m01, -m.m11, -m.m21)
+                : new Vector3(m.m01, m.m11, m.m21);
             if (forward == Vector3.zero || up == Vector3.zero)
                 return new Pose(position, Quaternion.identity);
             return new Pose(position, Quaternion.LookRotation(forward, up));
