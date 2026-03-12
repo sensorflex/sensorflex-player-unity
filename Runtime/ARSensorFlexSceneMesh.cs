@@ -3,14 +3,16 @@ using UnityEngine;
 namespace SensorFlex.Player
 {
     /// <summary>
-    /// Attach this component to a scene object to instantiate the packaged scanned mesh
-    /// under that object's transform at runtime.
+    /// Attach this component to an empty child under the scene's XROrigin to instantiate
+    /// the packaged scanned mesh under that object's transform at runtime.
     /// </summary>
     [DisallowMultipleComponent]
-    [AddComponentMenu("XR/SensorFlex/AR Scanned Scene Mesh")]
-    public sealed class ARScannedSceneMesh : MonoBehaviour
+    [AddComponentMenu("XR/SensorFlex/AR SensorFlex Scene Mesh")]
+    public sealed class ARSensorFlexSceneMesh : MonoBehaviour
     {
+        [Tooltip("Optional material override used for the scanned scene mesh.")]
         [SerializeField] Material m_Material;
+        [Tooltip("Add a MeshCollider to the instantiated scanned mesh.")]
         [SerializeField] bool m_AddMeshCollider;
 
         GameObject m_Instance;

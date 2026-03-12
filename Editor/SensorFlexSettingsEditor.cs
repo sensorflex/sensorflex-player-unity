@@ -11,6 +11,9 @@ namespace SensorFlexPlayer.Editor
         {
             serializedObject.Update();
 
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_XROrigin"));
+            EditorGUILayout.Space();
+
             var modeProp = serializedObject.FindProperty("m_FrameSourceMode");
             EditorGUILayout.PropertyField(modeProp);
             EditorGUILayout.Space();
@@ -19,13 +22,10 @@ namespace SensorFlexPlayer.Editor
 
             if (mode == ARSensorFlexSession.FrameSourceMode.WebSocket)
             {
-                EditorGUILayout.LabelField("WebSocket", EditorStyles.boldLabel);
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("m_WebSocketUrl"));
             }
             else if (mode == ARSensorFlexSession.FrameSourceMode.Zip)
             {
-                EditorGUILayout.LabelField("ZIP", EditorStyles.boldLabel);
-
                 var pathProp = serializedObject.FindProperty("m_ZipFilePath");
                 EditorGUILayout.BeginHorizontal();
                 pathProp.stringValue = EditorGUILayout.TextField("Archive", pathProp.stringValue);
@@ -39,25 +39,17 @@ namespace SensorFlexPlayer.Editor
             }
             else // FileSystem
             {
-                EditorGUILayout.LabelField("File System", EditorStyles.boldLabel);
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("m_ImageFolder"));
             }
 
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Playback", EditorStyles.boldLabel);
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PreloadFrameCount"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
             if (mode != ARSensorFlexSession.FrameSourceMode.Zip)
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("m_TargetFPS"));
 
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Depth (Occlusion)", EditorStyles.boldLabel);
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_DepthEnabled"));
-            if (mode == ARSensorFlexSession.FrameSourceMode.FileSystem)
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_DepthFolder"));
-
-            EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Session Alignment", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("World Alignment", EditorStyles.boldLabel);
             var sessionAlignmentProp = serializedObject.FindProperty("m_SessionAlignment");
             var enabledProp = sessionAlignmentProp.FindPropertyRelative("enabled");
             EditorGUILayout.PropertyField(enabledProp, new GUIContent("Apply To XR Origin"));
@@ -69,29 +61,15 @@ namespace SensorFlexPlayer.Editor
             }
 
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Camera Clip Planes", EditorStyles.boldLabel);
-            var overrideClipPlanesProp = serializedObject.FindProperty("m_OverrideCameraClipPlanes");
-            EditorGUILayout.PropertyField(overrideClipPlanesProp);
-            if (overrideClipPlanesProp.boolValue)
-            {
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_NearClipPlane"));
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_FarClipPlane"));
-            }
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_DepthEnabled"));
+            if (mode == ARSensorFlexSession.FrameSourceMode.FileSystem)
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_DepthFolder"));
 
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Replay Camera", EditorStyles.boldLabel);
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_DriveReplayCamera"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_ReplayTargetOverride"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_UseLocalSpace"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PositionScale"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PositionOffset"));
-
-            EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Scanned Mesh", EditorStyles.boldLabel);
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_InstantiateScannedMesh"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_MeshRootOverride"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_Material"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_AddMeshCollider"));
 
             serializedObject.ApplyModifiedProperties();
         }
