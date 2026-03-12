@@ -32,10 +32,10 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
 - `Runtime/Subsystem/Session.cs`
   Provides a minimal `XRSessionSubsystem` implementation so the package can participate in the XR lifecycle.
 
-- `Runtime/PoseBridge.cs`
+- `Runtime/Bridges/PoseBridge.cs`
   Acts as a public static pose handoff for host app code that wants the current camera pose without going through AR Foundation pose APIs.
 
-- `Runtime/ScannedSceneMeshBridge.cs`
+- `Runtime/Bridges/ScannedSceneMeshBridge.cs`
   Carries the loaded scene mesh from the package runtime to public scene components such as `ARSensorFlexSession`.
 
 - `Runtime/Library/FrameLoading.cs`
