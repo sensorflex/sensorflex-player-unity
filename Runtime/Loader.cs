@@ -49,7 +49,7 @@ namespace SensorFlex.Player
             if (settings == null)
                 Debug.LogWarning("[SF] Session alignment skipped because SensorFlexSettings could not be resolved at loader startup.");
 
-            SessionAlignmentApplier.ApplyToActiveXROrigin(settings);
+            ARSensorFlexSession.ApplySessionAlignment(settings);
             RebindSceneARSessionIfNeeded();
             return true;
         }
