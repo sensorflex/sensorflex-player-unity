@@ -101,7 +101,7 @@ namespace SensorFlex.Player.Library
 
     internal interface IFrameLoaderBackend
     {
-        void Start(SensorFlexSettings settings, IFrameLoaderState state, int framesToWait);
+        void Start(ARSensorFlexSession session, IFrameLoaderState state, int framesToWait);
         void DrainMainThreadWork();
         void Dispatch();
         Task StopAsync();
@@ -136,18 +136,21 @@ namespace SensorFlex.Player.Library
             m_State = new FrameLoaderState(0);
         }
 
-        public void Start(SensorFlexSettings settings, int maxFramesToLoad, int framesToWait)
+        public void Start(ARSensorFlexSession session, int maxFramesToLoad, int framesToWait)
         {
+            if (session == null)
+                throw new InvalidOperationException("[SF] FrameLoader.Start() requires an active ARSensorFlexSession.");
+
             var state = new FrameLoaderState(maxFramesToLoad)
             {
                 IsReady = false,
                 PlayHead = 0,
-                FrameInterval = 1.0 / Math.Max(1, settings.targetFPS)
+                FrameInterval = 1.0 / Math.Max(1, session.TargetFPS)
             };
 
-            m_Backend = CreateBackend(settings.frameSourceMode);
+            m_Backend = CreateBackend(session.SourceMode);
             m_State = state;
-            m_Backend.Start(settings, state, framesToWait);
+            m_Backend.Start(session, state, framesToWait);
         }
 
         public void DrainUploadQueue()
@@ -171,13 +174,13 @@ namespace SensorFlex.Player.Library
             m_State.DestroyTextures();
         }
 
-        static IFrameLoaderBackend CreateBackend(SensorFlexSettings.FrameSourceMode mode)
+        static IFrameLoaderBackend CreateBackend(ARSensorFlexSession.FrameSourceMode mode)
         {
             return mode switch
             {
-                SensorFlexSettings.FrameSourceMode.FileSystem => new FileSystemFrameLoaderBackend(),
-                SensorFlexSettings.FrameSourceMode.Zip => new ZipFrameLoaderBackend(),
-                SensorFlexSettings.FrameSourceMode.WebSocket => new WebSocketFrameLoaderBackend(),
+                ARSensorFlexSession.FrameSourceMode.FileSystem => new FileSystemFrameLoaderBackend(),
+                ARSensorFlexSession.FrameSourceMode.Zip => new ZipFrameLoaderBackend(),
+                ARSensorFlexSession.FrameSourceMode.WebSocket => new WebSocketFrameLoaderBackend(),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
             };
         }
@@ -185,9 +188,9 @@ namespace SensorFlex.Player.Library
 
     internal sealed class FileSystemFrameLoaderBackend : IFrameLoaderBackend
     {
-        public void Start(SensorFlexSettings settings, IFrameLoaderState state, int framesToWait)
+        public void Start(ARSensorFlexSession session, IFrameLoaderState state, int framesToWait)
         {
-            string folder = settings.imageFolder;
+            string folder = session.ImageFolder;
             if (!Path.IsPathRooted(folder))
                 folder = Path.Combine(Application.streamingAssetsPath, folder);
 
@@ -243,7 +246,7 @@ namespace SensorFlex.Player.Library
         int m_ReceivedFrames;
         bool m_Started;
 
-        public async void Start(SensorFlexSettings settings, IFrameLoaderState state, int framesToWait)
+        public async void Start(ARSensorFlexSession session, IFrameLoaderState state, int framesToWait)
         {
             if (m_Started) return;
 
@@ -251,8 +254,8 @@ namespace SensorFlex.Player.Library
             m_ExpectedFrames = state.BufSize;
             state.AllocateLinearFrames(state.BufSize);
 
-            Debug.Log($"[SF] WebSocket connecting to {settings.webSocketUrl}, requesting {state.BufSize} frames.");
-            m_WebSocket = new WebSocket(settings.webSocketUrl);
+            Debug.Log($"[SF] WebSocket connecting to {session.WebSocketUrl}, requesting {state.BufSize} frames.");
+            m_WebSocket = new WebSocket(session.WebSocketUrl);
 
             m_WebSocket.OnOpen += () =>
             {
@@ -357,7 +360,7 @@ namespace SensorFlex.Player.Library
 
         const int UploadBatchSize = 3;
 
-        SensorFlexSettings m_Settings;
+        ARSensorFlexSession m_Session;
         IFrameLoaderState m_State;
         int m_FramesToWait;
         volatile bool m_StopLoading;
@@ -370,9 +373,9 @@ namespace SensorFlex.Player.Library
         bool m_LoggedFirstUpload;
         bool m_LoggedReady;
 
-        public void Start(SensorFlexSettings settings, IFrameLoaderState state, int framesToWait)
+        public void Start(ARSensorFlexSession session, IFrameLoaderState state, int framesToWait)
         {
-            m_Settings = settings;
+            m_Session = session;
             m_State = state;
             m_FramesToWait = framesToWait;
             m_StopLoading = false;
@@ -383,7 +386,7 @@ namespace SensorFlex.Player.Library
             m_LoggedFirstUpload = false;
             m_LoggedReady = false;
 
-            string path = settings.zipFilePath;
+            string path = session.ZipFilePath;
             if (!Path.IsPathRooted(path))
                 path = Path.Combine(Application.streamingAssetsPath, path);
 
@@ -554,7 +557,7 @@ namespace SensorFlex.Player.Library
 
         void LoadFrames(string path, string sceneId)
         {
-            bool looping = m_Settings.loopSequence;
+            bool looping = m_Session.LoopSequence;
             int iteration = 0;
 
             while (!m_StopLoading)

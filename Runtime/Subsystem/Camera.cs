@@ -80,7 +80,7 @@ namespace SensorFlex.Player.Subsystem
 
             // ── Settings & loader ────────────────────────────────────────────────
 
-            private SensorFlexSettings settings;
+            private ARSensorFlexSession session;
             private int maxFramesToLoad;
             private FrameLoader m_Loader;
 
@@ -95,6 +95,7 @@ namespace SensorFlex.Player.Subsystem
             private bool m_LoggedFirstTextureSet;
             private bool m_LoggedEmptyTextureDescriptors;
             private bool m_LoggedNonEmptyTextureDescriptors;
+            private bool m_LoggedWaitingForSession;
 
 
             // ── Material / camera ────────────────────────────────────────────────
@@ -164,36 +165,16 @@ namespace SensorFlex.Player.Subsystem
                 m_LoggedFirstTextureSet = false;
                 m_LoggedEmptyTextureDescriptors = false;
                 m_LoggedNonEmptyTextureDescriptors = false;
+                m_LoggedWaitingForSession = false;
                 if (EnableProgrammaticLoadingOverlay)
                 {
                     m_LoadingOverlay ??= new LoadingScreenOverlay();
                     m_LoadingOverlay.Show("Loading SensorFlex frames...");
                 }
 
-                settings = SensorFlexSettings.RuntimeInstance ?? Resources.Load<SensorFlexSettings>("SensorFlexSettings");
                 m_CurrentConfiguration = new XRCameraConfiguration(IntPtr.Zero, new Vector2Int(1920, 1440), framerate: 60);
-
-                if (settings == null) { Debug.LogError("[SF] SensorFlexSettings.asset not found in Resources/"); return; }
-
-                ARSensorFlexSession.ApplySessionAlignment(settings);
-
-                maxFramesToLoad = settings.preloadFrameCount;
-                FramesToWait    = Math.Max(1, maxFramesToLoad / 4);
-
-                ScannedSceneMeshBridge.Clear();
-                m_ScannedSceneMeshLoadOperation = ScannedSceneMeshLoadOperation.Start(settings);
-                if (m_ScannedSceneMeshLoadOperation != null)
-                {
-                    m_StartupStage = StartupStage.LoadingSceneMesh;
-                    if (EnableProgrammaticLoadingOverlay)
-                        m_LoadingOverlay.Show("Loading scanned mesh...");
-                }
-                else
-                {
-                    BeginFrameWarmup();
-                }
-
-                nextFrameTime = Time.realtimeSinceStartupAsDouble + frameInterval;
+                m_StartupStage = StartupStage.WarmingUpFrames;
+                nextFrameTime = Time.realtimeSinceStartupAsDouble;
             }
 
 
@@ -201,6 +182,9 @@ namespace SensorFlex.Player.Subsystem
 
             void UpdateFrameIfNeeded()
             {
+                if (!EnsureSessionInitialized())
+                    return;
+
                 if (m_StartupStage == StartupStage.LoadingSceneMesh)
                 {
                     TryCompleteSceneMeshLoad();
@@ -209,13 +193,13 @@ namespace SensorFlex.Player.Subsystem
 
                 if (m_Loader == null) return;
 
-                if (settings.frameSourceMode == SensorFlexSettings.FrameSourceMode.WebSocket)
+                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.WebSocket)
                     m_Loader.DispatchWebSocket();
 
                 if (Time.realtimeSinceStartupAsDouble < nextFrameTime) return;
                 nextFrameTime = Time.realtimeSinceStartupAsDouble + frameInterval;
 
-                if (settings.frameSourceMode == SensorFlexSettings.FrameSourceMode.Zip)
+                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Zip)
                 {
                     UpdateZipFrame();
                     return;
@@ -249,10 +233,50 @@ namespace SensorFlex.Player.Subsystem
                 index++;
                 var frames = m_Loader.Frames;
                 if (index >= frames.Length)
-                    index = settings.loopSequence ? 0 : frames.Length - 1;
+                    index = session.LoopSequence ? 0 : frames.Length - 1;
 
                 LoadFrame(index);
                 OnFramesReady?.Invoke();
+            }
+
+            bool EnsureSessionInitialized()
+            {
+                if (session != null)
+                    return true;
+
+                session = ARSensorFlexSession.ResolveActiveSession();
+                if (session == null)
+                {
+                    if (!m_LoggedWaitingForSession)
+                    {
+                        Debug.Log("[SF] Waiting for ARSensorFlexSession to become available.");
+                        m_LoggedWaitingForSession = true;
+                    }
+
+                    return false;
+                }
+
+                m_LoggedWaitingForSession = false;
+                session.ApplySessionAlignment();
+
+                maxFramesToLoad = session.PreloadFrameCount;
+                FramesToWait = Math.Max(1, maxFramesToLoad / 4);
+
+                ScannedSceneMeshBridge.Clear();
+                m_ScannedSceneMeshLoadOperation = ScannedSceneMeshLoadOperation.Start(session);
+                if (m_ScannedSceneMeshLoadOperation != null)
+                {
+                    m_StartupStage = StartupStage.LoadingSceneMesh;
+                    if (EnableProgrammaticLoadingOverlay)
+                        m_LoadingOverlay.Show("Loading scanned mesh...");
+                }
+                else
+                {
+                    BeginFrameWarmup();
+                }
+
+                nextFrameTime = Time.realtimeSinceStartupAsDouble + frameInterval;
+                return true;
             }
 
             void UpdateZipFrame()
@@ -338,15 +362,26 @@ namespace SensorFlex.Player.Subsystem
                 m_StartupStage = StartupStage.WarmingUpFrames;
                 showLoadingScreen = true;
 
+                session = ARSensorFlexSession.ResolveActiveSession();
+                if (session == null)
+                {
+                    Debug.LogError("[SF] Cannot begin frame warmup because no active ARSensorFlexSession is available.");
+                    showLoadingScreen = false;
+                    if (EnableProgrammaticLoadingOverlay)
+                        m_LoadingOverlay?.Hide();
+                    m_StartupStage = StartupStage.Playing;
+                    return;
+                }
+
                 m_Loader = new FrameLoader();
-                m_Loader.Start(settings, maxFramesToLoad, FramesToWait);
+                m_Loader.Start(session, maxFramesToLoad, FramesToWait);
                 ActiveLoader = m_Loader;
 
-                frameInterval = settings.frameSourceMode == SensorFlexSettings.FrameSourceMode.Zip
+                frameInterval = session.SourceMode == ARSensorFlexSession.FrameSourceMode.Zip
                     ? m_Loader.FrameInterval
-                    : 1.0 / Math.Max(1, settings.targetFPS);
+                    : 1.0 / Math.Max(1, session.TargetFPS);
 
-                Debug.Log($"[SF] Mode={settings.frameSourceMode} FramesToWait={FramesToWait} BufferSize={maxFramesToLoad} FrameInterval={frameInterval:F4}s");
+                Debug.Log($"[SF] Mode={session.SourceMode} FramesToWait={FramesToWait} BufferSize={maxFramesToLoad} FrameInterval={frameInterval:F4}s");
                 if (EnableProgrammaticLoadingOverlay)
                     UpdateLoadingScreenText();
             }
@@ -366,9 +401,9 @@ namespace SensorFlex.Player.Subsystem
 
             void UpdateLoadingScreenText()
             {
-                if (m_LoadingOverlay == null || settings == null) return;
+                if (m_LoadingOverlay == null || session == null) return;
 
-                string source = settings.frameSourceMode.ToString();
+                string source = session.SourceMode.ToString();
                 int progress = Math.Min(FramesLoaded, FramesToWait);
                 if (m_StartupStage == StartupStage.LoadingSceneMesh)
                 {
@@ -457,6 +492,7 @@ namespace SensorFlex.Player.Subsystem
             {
                 ActiveLoader = null;
                 m_ScannedSceneMeshLoadOperation = null;
+                session = null;
 
                 if (m_Loader != null)
                 {

@@ -44,12 +44,6 @@ namespace SensorFlex.Player
             var ses = GetLoadedSubsystem<XRSessionSubsystem>();
             var occ = GetLoadedSubsystem<XROcclusionSubsystem>();
             Debug.Log($"[SF] Subsystem running states after loader start: Camera={cam?.running} Session={ses?.running} Occlusion={occ?.running}");
-
-            var settings = ResolveSettings();
-            if (settings == null)
-                Debug.LogWarning("[SF] Session alignment skipped because SensorFlexSettings could not be resolved at loader startup.");
-
-            ARSensorFlexSession.ApplySessionAlignment(settings);
             RebindSceneARSessionIfNeeded();
             return true;
         }
@@ -88,10 +82,5 @@ namespace SensorFlex.Player
             }
         }
 
-        static SensorFlexSettings ResolveSettings()
-        {
-            return SensorFlexSettings.RuntimeInstance
-                ?? Resources.Load<SensorFlexSettings>("SensorFlexSettings");
-        }
     }
 }

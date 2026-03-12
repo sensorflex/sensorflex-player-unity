@@ -25,12 +25,12 @@ namespace SensorFlex.Player.Library
             m_SceneId = sceneId;
         }
 
-        public static ScannedSceneMeshLoadOperation Start(SensorFlexSettings settings)
+        public static ScannedSceneMeshLoadOperation Start(ARSensorFlexSession session)
         {
-            if (settings == null || settings.frameSourceMode != SensorFlexSettings.FrameSourceMode.Zip)
+            if (session == null || session.SourceMode != ARSensorFlexSession.FrameSourceMode.Zip)
                 return null;
 
-            string zipPath = settings.zipFilePath;
+            string zipPath = session.ZipFilePath;
             if (!Path.IsPathRooted(zipPath))
                 zipPath = Path.Combine(Application.streamingAssetsPath, zipPath);
 

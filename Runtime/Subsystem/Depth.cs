@@ -45,11 +45,13 @@ namespace SensorFlex.Player.Subsystem
 
         class DepthDataProvider : Provider
         {
-            SensorFlexSettings settings;
+            ARSensorFlexSession session;
             Texture2D[] preloadedDepthFrames;
             Texture2D m_CurrentDepthTexture;
             int index;
             bool framesReady;
+            bool m_HasBoundSession;
+            bool m_LoggedWaitingForSession;
 
             // ----------------------------------------------------------------
             // Environment depth mode
@@ -84,31 +86,9 @@ namespace SensorFlex.Player.Subsystem
             // ----------------------------------------------------------------
             public override void Start()
             {
-                settings = SensorFlexSettings.RuntimeInstance
-                    ?? Resources.Load<SensorFlexSettings>("SensorFlexSettings");
-
-                if (settings == null)
-                {
-                    Debug.LogError("[SF] OcclusionSubsystem: SensorFlexSettings not found.");
-                    return;
-                }
-
-                if (!settings.depthEnabled)
-                {
-                    Debug.Log("[SF] OcclusionSubsystem: depth disabled in settings.");
-                    return;
-                }
-
-                if (settings.frameSourceMode != SensorFlexSettings.FrameSourceMode.FileSystem)
-                {
-                    Debug.LogWarning("[SF] OcclusionSubsystem: WebSocket depth not yet supported — depth disabled.");
-                    return;
-                }
-
-                LoadDepthFrames();
-
-                // Advance depth index in lock-step with camera frames
                 CameraSubsystem.CameraDataProvider.OnFramesReady += AdvanceFrame;
+                m_HasBoundSession = false;
+                m_LoggedWaitingForSession = false;
             }
 
             public override void Stop()
@@ -125,6 +105,8 @@ namespace SensorFlex.Player.Subsystem
 
                 m_CurrentDepthTexture = null;
                 framesReady = false;
+                session = null;
+                m_HasBoundSession = false;
             }
 
             public override void Destroy() { }
@@ -134,6 +116,8 @@ namespace SensorFlex.Player.Subsystem
             // ----------------------------------------------------------------
             public override bool TryGetEnvironmentDepth(out XRTextureDescriptor environmentDepthDescriptor)
             {
+                EnsureSessionInitialized();
+
                 if (!framesReady || m_CurrentDepthTexture == null)
                 {
                     environmentDepthDescriptor = default;
@@ -157,9 +141,44 @@ namespace SensorFlex.Player.Subsystem
             // ----------------------------------------------------------------
             // Helpers
             // ----------------------------------------------------------------
+            void EnsureSessionInitialized()
+            {
+                if (m_HasBoundSession)
+                    return;
+
+                session = ARSensorFlexSession.ResolveActiveSession();
+                if (session == null)
+                {
+                    if (!m_LoggedWaitingForSession)
+                    {
+                        Debug.Log("[SF] OcclusionSubsystem: waiting for ARSensorFlexSession to become available.");
+                        m_LoggedWaitingForSession = true;
+                    }
+
+                    return;
+                }
+
+                m_HasBoundSession = true;
+                m_LoggedWaitingForSession = false;
+
+                if (!session.DepthEnabled)
+                {
+                    Debug.Log("[SF] OcclusionSubsystem: depth disabled on the active session.");
+                    return;
+                }
+
+                if (session.SourceMode != ARSensorFlexSession.FrameSourceMode.FileSystem)
+                {
+                    Debug.LogWarning("[SF] OcclusionSubsystem: WebSocket depth not yet supported — depth disabled.");
+                    return;
+                }
+
+                LoadDepthFrames();
+            }
+
             void LoadDepthFrames()
             {
-                string folder = settings.depthFolder;
+                string folder = session.DepthFolder;
                 if (!Path.IsPathRooted(folder))
                     folder = Path.Combine(Application.streamingAssetsPath, folder);
 
@@ -182,7 +201,7 @@ namespace SensorFlex.Player.Subsystem
 
                 files.Sort(StringComparer.Ordinal);
 
-                int count = Mathf.Min(settings.preloadFrameCount, files.Count);
+                int count = Mathf.Min(session.PreloadFrameCount, files.Count);
                 if (count == 0)
                 {
                     Debug.LogWarning($"[SF] OcclusionSubsystem: no depth images found in {folder}");
@@ -218,7 +237,7 @@ namespace SensorFlex.Player.Subsystem
 
                 index++;
                 if (index >= preloadedDepthFrames.Length)
-                    index = settings != null && settings.loopSequence ? 0 : preloadedDepthFrames.Length - 1;
+                    index = session != null && session.LoopSequence ? 0 : preloadedDepthFrames.Length - 1;
 
                 m_CurrentDepthTexture = preloadedDepthFrames[index];
             }
