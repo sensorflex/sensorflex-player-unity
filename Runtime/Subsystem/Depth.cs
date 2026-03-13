@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.XR.ARSubsystems;
@@ -45,6 +46,10 @@ namespace SensorFlex.Player.Subsystem
 
         class DepthDataProvider : Provider
         {
+            const int RawDepthWidth = 256;
+            const int RawDepthHeight = 192;
+            static readonly int EnvironmentDepthPropertyId = Shader.PropertyToID("_EnvironmentDepth");
+
             ARSensorFlexSession session;
             Texture2D[] preloadedDepthFrames;
             Texture2D m_CurrentDepthTexture;
@@ -52,6 +57,8 @@ namespace SensorFlex.Player.Subsystem
             bool framesReady;
             bool m_HasBoundSession;
             bool m_LoggedWaitingForSession;
+            bool m_LoggedNormalizedDepthScaleWarning;
+            float m_CurrentDepthWorldScale = 1f;
 
             // ----------------------------------------------------------------
             // Environment depth mode
@@ -94,17 +101,7 @@ namespace SensorFlex.Player.Subsystem
             public override void Stop()
             {
                 CameraSubsystem.CameraDataProvider.OnFramesReady -= AdvanceFrame;
-
-                if (preloadedDepthFrames != null)
-                {
-                    foreach (var tex in preloadedDepthFrames)
-                        if (tex != null) UnityEngine.Object.Destroy(tex);
-
-                    preloadedDepthFrames = null;
-                }
-
-                m_CurrentDepthTexture = null;
-                framesReady = false;
+                ReleaseDepthFrames();
                 session = null;
                 m_HasBoundSession = false;
             }
@@ -117,25 +114,52 @@ namespace SensorFlex.Player.Subsystem
             public override bool TryGetEnvironmentDepth(out XRTextureDescriptor environmentDepthDescriptor)
             {
                 EnsureSessionInitialized();
+                return TryBuildCurrentDescriptor(out environmentDepthDescriptor);
+            }
+
+            public override NativeArray<XRTextureDescriptor> GetTextureDescriptors(
+                XRTextureDescriptor defaultDescriptor, Allocator allocator)
+            {
+                EnsureSessionInitialized();
+
+                if (!TryBuildCurrentDescriptor(out var descriptor))
+                    return new NativeArray<XRTextureDescriptor>(0, allocator);
+
+                var descriptors = new NativeArray<XRTextureDescriptor>(1, allocator);
+                descriptors[0] = descriptor;
+                return descriptors;
+            }
+
+            public override XRResultStatus TryGetFrame(Allocator allocator, out XROcclusionFrame frame)
+            {
+                EnsureSessionInitialized();
 
                 if (!framesReady || m_CurrentDepthTexture == null)
                 {
-                    environmentDepthDescriptor = default;
-                    return false;
+                    frame = default;
+                    return new XRResultStatus(XRResultStatus.StatusCode.ProviderNotStarted);
                 }
 
-                environmentDepthDescriptor = new XRTextureDescriptor(
-                    m_CurrentDepthTexture.GetNativeTexturePtr(),
-                    m_CurrentDepthTexture.width,
-                    m_CurrentDepthTexture.height,
-                    m_CurrentDepthTexture.mipmapCount,
-                    m_CurrentDepthTexture.format,
-                    Shader.PropertyToID("_EnvironmentDepth"),
-                    0,
-                    XRTextureType.Texture2D
-                );
+                ARSensorFlexSession.GetPreferredClipPlanes(out float nearClipPlane, out float farClipPlane);
 
-                return true;
+                var poses = new NativeArray<Pose>(1, allocator);
+                poses[0] = PoseBridge.HasPose ? PoseBridge.LatestPose : Pose.identity;
+
+                var textureDims = CameraSubsystem.CameraDataProvider.LatestTextureDimensions;
+                var fovs = new NativeArray<XRFov>(1, allocator);
+                fovs[0] = BuildFov(CameraSubsystem.CameraDataProvider.LatestIntrinsics, textureDims);
+
+                frame = new XROcclusionFrame(
+                    XROcclusionFrameProperties.Timestamp |
+                    XROcclusionFrameProperties.NearFarPlanes |
+                    XROcclusionFrameProperties.Poses |
+                    XROcclusionFrameProperties.Fovs,
+                    CameraSubsystem.CameraDataProvider.LatestTimestampNs,
+                    new XRNearFarPlanes(nearClipPlane, farClipPlane),
+                    poses,
+                    fovs);
+
+                return XRResultStatus.unqualifiedSuccess;
             }
 
             // ----------------------------------------------------------------
@@ -144,7 +168,10 @@ namespace SensorFlex.Player.Subsystem
             void EnsureSessionInitialized()
             {
                 if (m_HasBoundSession)
+                {
+                    RefreshScaledDepthIfNeeded();
                     return;
+                }
 
                 session = ARSensorFlexSession.ResolveActiveSession();
                 if (session == null)
@@ -160,6 +187,7 @@ namespace SensorFlex.Player.Subsystem
 
                 m_HasBoundSession = true;
                 m_LoggedWaitingForSession = false;
+                m_CurrentDepthWorldScale = session.EffectiveDepthWorldScale;
 
                 if (!session.DepthEnabled)
                 {
@@ -173,6 +201,22 @@ namespace SensorFlex.Player.Subsystem
                     return;
                 }
 
+                LoadDepthFrames();
+            }
+
+            void RefreshScaledDepthIfNeeded()
+            {
+                if (session == null || !framesReady)
+                    return;
+
+                float latestScale = session.EffectiveDepthWorldScale;
+                if (Mathf.Approximately(latestScale, m_CurrentDepthWorldScale))
+                    return;
+
+                m_CurrentDepthWorldScale = latestScale;
+                m_LoggedNormalizedDepthScaleWarning = false;
+
+                ReleaseDepthFrames();
                 LoadDepthFrames();
             }
 
@@ -193,7 +237,8 @@ namespace SensorFlex.Player.Subsystem
                 {
                     if (file.EndsWith(".png",  StringComparison.OrdinalIgnoreCase) ||
                         file.EndsWith(".jpg",  StringComparison.OrdinalIgnoreCase) ||
-                        file.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase))
+                        file.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+                        file.EndsWith(".bin",  StringComparison.OrdinalIgnoreCase))
                     {
                         files.Add(file);
                     }
@@ -210,24 +255,137 @@ namespace SensorFlex.Player.Subsystem
 
                 preloadedDepthFrames = new Texture2D[count];
                 for (int i = 0; i < count; i++)
-                    preloadedDepthFrames[i] = LoadDepthFrame(files[i]);
+                    preloadedDepthFrames[i] = LoadDepthFrame(files[i], m_CurrentDepthWorldScale, ref m_LoggedNormalizedDepthScaleWarning);
 
                 index = 0;
                 m_CurrentDepthTexture = preloadedDepthFrames[0];
                 framesReady = true;
 
-                Debug.Log($"[SF] OcclusionSubsystem: loaded {count} depth frames from {folder}");
+                Debug.Log($"[SF] OcclusionSubsystem: loaded {count} depth frames from {folder} (worldScale={m_CurrentDepthWorldScale:0.####})");
             }
 
-            static Texture2D LoadDepthFrame(string path)
+            void ReleaseDepthFrames()
             {
+                if (preloadedDepthFrames == null)
+                    return;
+
+                foreach (var tex in preloadedDepthFrames)
+                {
+                    if (tex != null)
+                        UnityEngine.Object.Destroy(tex);
+                }
+
+                preloadedDepthFrames = null;
+                m_CurrentDepthTexture = null;
+                framesReady = false;
+                index = 0;
+            }
+
+            static Texture2D LoadDepthFrame(string path, float depthWorldScale, ref bool loggedNormalizedDepthScaleWarning)
+            {
+                if (path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+                    return LoadMetricDepthBin(path, depthWorldScale);
+
                 byte[] bytes = File.ReadAllBytes(path);
                 // LoadImage always decodes PNG/JPG into RGBA32.
                 // The R channel carries normalised depth [0,1].
+                if (!Mathf.Approximately(depthWorldScale, 1f) && !loggedNormalizedDepthScaleWarning)
+                {
+                    Debug.LogWarning(
+                        $"[SF] OcclusionSubsystem: world scale is {depthWorldScale:0.####}, " +
+                        $"but '{Path.GetFileName(path)}' is normalized PNG/JPG depth. " +
+                        "Metric scaling is only applied to raw float depth (.bin).");
+                    loggedNormalizedDepthScaleWarning = true;
+                }
+
                 var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
                 tex.LoadImage(bytes);
                 tex.Apply();
                 return tex;
+            }
+
+            static Texture2D LoadMetricDepthBin(string path, float depthWorldScale)
+            {
+                byte[] bytes = File.ReadAllBytes(path);
+                int expectedBytes = RawDepthWidth * RawDepthHeight * sizeof(float);
+                if (bytes.Length != expectedBytes)
+                {
+                    Debug.LogWarning(
+                        $"[SF] OcclusionSubsystem: unexpected depth.bin size for '{path}'. " +
+                        $"Expected {expectedBytes} bytes, got {bytes.Length}.");
+                    return null;
+                }
+
+                var depthValues = new float[RawDepthWidth * RawDepthHeight];
+                Buffer.BlockCopy(bytes, 0, depthValues, 0, bytes.Length);
+
+                if (!BitConverter.IsLittleEndian)
+                {
+                    for (int i = 0; i < depthValues.Length; i++)
+                    {
+                        byte[] valueBytes = BitConverter.GetBytes(depthValues[i]);
+                        Array.Reverse(valueBytes);
+                        depthValues[i] = BitConverter.ToSingle(valueBytes, 0);
+                    }
+                }
+
+                if (!Mathf.Approximately(depthWorldScale, 1f))
+                {
+                    for (int i = 0; i < depthValues.Length; i++)
+                    {
+                        if (depthValues[i] > 0f)
+                            depthValues[i] *= depthWorldScale;
+                    }
+                }
+
+                var tex = new Texture2D(RawDepthWidth, RawDepthHeight, TextureFormat.RFloat, false);
+                tex.SetPixelData(depthValues, 0);
+                tex.Apply(false, true);
+                return tex;
+            }
+
+            bool TryBuildCurrentDescriptor(out XRTextureDescriptor descriptor)
+            {
+                if (!framesReady || m_CurrentDepthTexture == null)
+                {
+                    descriptor = default;
+                    return false;
+                }
+
+                descriptor = new XRTextureDescriptor(
+                    m_CurrentDepthTexture.GetNativeTexturePtr(),
+                    m_CurrentDepthTexture.width,
+                    m_CurrentDepthTexture.height,
+                    m_CurrentDepthTexture.mipmapCount,
+                    m_CurrentDepthTexture.format,
+                    EnvironmentDepthPropertyId,
+                    0,
+                    XRTextureType.Texture2D
+                );
+
+                return true;
+            }
+
+            static XRFov BuildFov(Vector4 intrinsics, Vector2Int textureDimensions)
+            {
+                float fx = intrinsics.x;
+                float fy = intrinsics.y;
+                float cx = intrinsics.z;
+                float cy = intrinsics.w;
+                int width = Mathf.Max(1, textureDimensions.x);
+                int height = Mathf.Max(1, textureDimensions.y);
+
+                if (fx <= 0f || fy <= 0f)
+                {
+                    const float fallbackHalfFov = 30f * Mathf.Deg2Rad;
+                    return new XRFov(-fallbackHalfFov, fallbackHalfFov, fallbackHalfFov, -fallbackHalfFov);
+                }
+
+                float left = -Mathf.Atan(cx / fx);
+                float right = Mathf.Atan((width - cx) / fx);
+                float up = Mathf.Atan(cy / fy);
+                float down = -Mathf.Atan((height - cy) / fy);
+                return new XRFov(left, right, up, down);
             }
 
             void AdvanceFrame()

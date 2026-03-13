@@ -60,6 +60,9 @@ namespace SensorFlex.Player.Subsystem
             /// Null when the subsystem is not running.
             /// </summary>
             internal static FrameLoader ActiveLoader { get; private set; }
+            internal static long LatestTimestampNs { get; private set; }
+            internal static Vector4 LatestIntrinsics { get; private set; } = new(935.3f, 935.3f, 960f, 720f);
+            internal static Vector2Int LatestTextureDimensions { get; private set; } = new(1920, 1440);
 
             // ── Playback state ───────────────────────────────────────────────────
 
@@ -173,6 +176,9 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 m_CurrentConfiguration = new XRCameraConfiguration(IntPtr.Zero, new Vector2Int(1920, 1440), framerate: 60);
+                LatestTimestampNs = 0;
+                LatestIntrinsics = m_CurrentIntrinsics;
+                LatestTextureDimensions = new Vector2Int(1920, 1440);
                 m_StartupStage = StartupStage.WarmingUpFrames;
                 nextFrameTime = Time.realtimeSinceStartupAsDouble;
             }
@@ -323,6 +329,7 @@ namespace SensorFlex.Player.Subsystem
                 if (frames == null || i < 0 || i >= frames.Length) return;
                 SetCurrentTexture(frames[i]);
                 timestampNs += (long)(frameInterval * 1_000_000_000L);
+                LatestTimestampNs = timestampNs;
             }
 
             void PlayZipSlot(int slot)
@@ -330,6 +337,8 @@ namespace SensorFlex.Player.Subsystem
                 SetCurrentTexture(m_Loader.Frames[slot]);
                 timestampNs        += (long)(frameInterval * 1_000_000_000L);
                 m_CurrentIntrinsics = m_Loader.Intrinsics[slot];
+                LatestTimestampNs = timestampNs;
+                LatestIntrinsics = m_CurrentIntrinsics;
                 PoseBridge.SetUnityPose(ArchiveIOUtils.ConvertToUnityPose(
                     m_Loader.Poses[slot],
                     m_Loader.CoordConvMatrix,
@@ -389,6 +398,8 @@ namespace SensorFlex.Player.Subsystem
             void SetCurrentTexture(Texture2D texture)
             {
                 m_CurrentTexture = texture;
+                if (m_CurrentTexture != null)
+                    LatestTextureDimensions = new Vector2Int(m_CurrentTexture.width, m_CurrentTexture.height);
                 if (!m_LoggedFirstTextureSet && m_CurrentTexture != null)
                 {
                     Debug.Log($"[SF] First playback texture set: {m_CurrentTexture.width}x{m_CurrentTexture.height} name={m_CurrentTexture.name}");
@@ -481,6 +492,7 @@ namespace SensorFlex.Player.Subsystem
 
             public override bool TryGetIntrinsics(out XRCameraIntrinsics cameraIntrinsics)
             {
+                LatestIntrinsics = m_CurrentIntrinsics;
                 cameraIntrinsics = new XRCameraIntrinsics(
                     new Vector2(m_CurrentIntrinsics.x, m_CurrentIntrinsics.y),
                     new Vector2(m_CurrentIntrinsics.z, m_CurrentIntrinsics.w),

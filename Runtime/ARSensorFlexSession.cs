@@ -81,6 +81,17 @@ namespace SensorFlex.Player
         internal float TargetFPS => Mathf.Max(1f, m_TargetFPS);
         internal bool DepthEnabled => m_DepthEnabled;
         internal string DepthFolder => m_DepthFolder;
+        internal float EffectiveDepthWorldScale
+        {
+            get
+            {
+                float alignmentScale = 1f;
+                if (m_SessionAlignment != null && m_SessionAlignment.enabled)
+                    alignmentScale = Mathf.Max(0.0001f, m_SessionAlignment.uniformScale);
+
+                return Mathf.Max(0.0001f, alignmentScale * Mathf.Max(0.0001f, m_PositionScale));
+            }
+        }
 
         Transform ReplayTarget
             => m_ReplayTargetOverride != null
