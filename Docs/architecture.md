@@ -107,11 +107,11 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
 |            | Bridge             |               |                        |
 |            +--------------------+               |                        |
 |                                                                          |
-|   +----+---------------------------------------+                         |
-|   | FrameLoader facade                         |                         |
-|   | exposes Frames / Poses / Intrinsics /     |                         |
-|   | Depth to runtime subsystems               |                         |
-|   +-------------------+-----------------------+                         |
+|   +----+--------------------------------------+                          |
+|   | FrameLoader facade                        |                          |
+|   | exposes Frames / Poses / Intrinsics /     |                          |
+|   | Depth to runtime subsystems               |                          |
+|   +-------------------+-----------------------+                          |
 |                       |                                                  |
 |                       v                                                  |
 |          +------------+------------------------------+                   |
