@@ -59,6 +59,9 @@ namespace SensorFlex.Player.Subsystem
             bool m_LoggedWaitingForSession;
             bool m_LoggedNormalizedDepthScaleWarning;
             float m_CurrentDepthWorldScale = 1f;
+            bool m_IsZipMode;
+            Texture2D m_ZipDepthTexture;
+            int m_LastZipPlayHead = -1;
 
             // ----------------------------------------------------------------
             // Environment depth mode
@@ -169,7 +172,10 @@ namespace SensorFlex.Player.Subsystem
             {
                 if (m_HasBoundSession)
                 {
-                    RefreshScaledDepthIfNeeded();
+                    if (m_IsZipMode)
+                        EnsureZipLoaderReady();
+                    else
+                        RefreshScaledDepthIfNeeded();
                     return;
                 }
 
@@ -192,6 +198,13 @@ namespace SensorFlex.Player.Subsystem
                 if (!session.DepthEnabled)
                 {
                     Debug.Log("[SF] OcclusionSubsystem: depth disabled on the active session.");
+                    return;
+                }
+
+                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Zip)
+                {
+                    m_IsZipMode = true;
+                    Debug.Log("[SF] OcclusionSubsystem: ZIP mode — reading depth from FrameLoader ring buffer.");
                     return;
                 }
 
@@ -266,19 +279,27 @@ namespace SensorFlex.Player.Subsystem
 
             void ReleaseDepthFrames()
             {
-                if (preloadedDepthFrames == null)
-                    return;
-
-                foreach (var tex in preloadedDepthFrames)
+                if (preloadedDepthFrames != null)
                 {
-                    if (tex != null)
-                        UnityEngine.Object.Destroy(tex);
+                    foreach (var tex in preloadedDepthFrames)
+                    {
+                        if (tex != null)
+                            UnityEngine.Object.Destroy(tex);
+                    }
+                    preloadedDepthFrames = null;
                 }
 
-                preloadedDepthFrames = null;
+                if (m_ZipDepthTexture != null)
+                {
+                    UnityEngine.Object.Destroy(m_ZipDepthTexture);
+                    m_ZipDepthTexture = null;
+                }
+
                 m_CurrentDepthTexture = null;
                 framesReady = false;
                 index = 0;
+                m_IsZipMode = false;
+                m_LastZipPlayHead = -1;
             }
 
             static Texture2D LoadDepthFrame(string path, float depthWorldScale, ref bool loggedNormalizedDepthScaleWarning)
@@ -390,6 +411,12 @@ namespace SensorFlex.Player.Subsystem
 
             void AdvanceFrame()
             {
+                if (m_IsZipMode)
+                {
+                    UpdateZipDepthTexture();
+                    return;
+                }
+
                 if (!framesReady || preloadedDepthFrames == null)
                     return;
 
@@ -398,6 +425,95 @@ namespace SensorFlex.Player.Subsystem
                     index = session != null && session.LoopSequence ? 0 : preloadedDepthFrames.Length - 1;
 
                 m_CurrentDepthTexture = preloadedDepthFrames[index];
+            }
+
+            void EnsureZipLoaderReady()
+            {
+                if (framesReady)
+                    return;
+
+                var loader = CameraSubsystem.CameraDataProvider.ActiveLoader;
+                if (loader == null || !loader.IsReady)
+                    return;
+
+                m_ZipDepthTexture = new Texture2D(RawDepthWidth, RawDepthHeight, TextureFormat.RFloat, false);
+                framesReady = true;
+                Debug.Log("[SF] OcclusionSubsystem: ZIP depth texture allocated.");
+            }
+
+            void UpdateZipDepthTexture()
+            {
+                EnsureZipLoaderReady();
+                if (!framesReady || m_ZipDepthTexture == null)
+                    return;
+
+                var loader = CameraSubsystem.CameraDataProvider.ActiveLoader;
+                if (loader?.DepthBins == null)
+                    return;
+
+                int playHead = loader.PlayHead;
+                if (playHead < 0 || playHead == m_LastZipPlayHead)
+                    return;
+
+                int slot = playHead % loader.BufSize;
+
+                if (loader.SlotReady == null || !loader.SlotReady[slot])
+                    return;
+                if (loader.SlotGlobalIdx == null || loader.SlotGlobalIdx[slot] != playHead)
+                    return;
+
+                byte[] depthBytes = loader.DepthBins[slot];
+                if (depthBytes == null)
+                {
+                    m_CurrentDepthTexture = null;
+                    m_LastZipPlayHead = playHead;
+                    return;
+                }
+
+                int expectedBytes = RawDepthWidth * RawDepthHeight * sizeof(float);
+                if (depthBytes.Length != expectedBytes)
+                {
+                    Debug.LogWarning(
+                        $"[SF] OcclusionSubsystem: ZIP depth slot {slot} wrong size." +
+                        $" expected={expectedBytes} actual={depthBytes.Length}");
+                    m_CurrentDepthTexture = null;
+                    m_LastZipPlayHead = playHead;
+                    return;
+                }
+
+                // Fast path: little-endian platform, no world scale — blit raw bytes directly.
+                if (BitConverter.IsLittleEndian && Mathf.Approximately(m_CurrentDepthWorldScale, 1f))
+                {
+                    m_ZipDepthTexture.SetPixelData(depthBytes, 0);
+                }
+                else
+                {
+                    var floats = new float[RawDepthWidth * RawDepthHeight];
+                    Buffer.BlockCopy(depthBytes, 0, floats, 0, depthBytes.Length);
+
+                    if (!BitConverter.IsLittleEndian)
+                    {
+                        for (int i = 0; i < floats.Length; i++)
+                        {
+                            var b = BitConverter.GetBytes(floats[i]);
+                            Array.Reverse(b);
+                            floats[i] = BitConverter.ToSingle(b, 0);
+                        }
+                    }
+
+                    if (!Mathf.Approximately(m_CurrentDepthWorldScale, 1f))
+                    {
+                        for (int i = 0; i < floats.Length; i++)
+                            if (floats[i] > 0f)
+                                floats[i] *= m_CurrentDepthWorldScale;
+                    }
+
+                    m_ZipDepthTexture.SetPixelData(floats, 0);
+                }
+
+                m_ZipDepthTexture.Apply(false);
+                m_CurrentDepthTexture = m_ZipDepthTexture;
+                m_LastZipPlayHead = playHead;
             }
         }
     }
