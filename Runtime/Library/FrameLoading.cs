@@ -88,11 +88,14 @@ namespace SensorFlex.Player.Library
 
         public void DestroyTextures()
         {
-            if (Frames == null) return;
+            if (Frames == null)
+                return;
 
             for (int i = 0; i < Frames.Length; i++)
             {
-                if (Frames[i] == null) continue;
+                if (Frames[i] == null)
+                    continue;
+
                 UnityEngine.Object.Destroy(Frames[i]);
                 Frames[i] = null;
             }
@@ -144,7 +147,7 @@ namespace SensorFlex.Player.Library
             var state = new FrameLoaderState(maxFramesToLoad)
             {
                 IsReady = false,
-                PlayHead = 0,
+                PlayHead = -1,
                 FrameInterval = 1.0 / Math.Max(1, session.TargetFPS)
             };
 
@@ -241,107 +244,301 @@ namespace SensorFlex.Player.Library
 
     internal sealed class WebSocketFrameLoaderBackend : IFrameLoaderBackend
     {
+        const int UploadBatchSize = 3;
+        const uint FrameMagic = 0x50574653; // "SFWP"
+
+        struct PendingFramePacket
+        {
+            public int GlobalFrameIndex;
+            public byte[] RgbBytes;
+            public byte[] MetaJsonBytes;
+            public byte[] DepthBytes;
+        }
+
+        [Serializable]
+        sealed class HelloMessage
+        {
+            public string type = "hello";
+            public int protocolVersion = 1;
+            public int requestedBufferSize;
+            public int framesToWarm;
+            public bool loop;
+            public bool wantDepth;
+        }
+
+        [Serializable]
+        sealed class WindowMessage
+        {
+            public string type = "window";
+            public int playHead;
+            public int bufferSize;
+        }
+
+        [Serializable]
+        sealed class SceneMessage
+        {
+            public string type;
+            public int protocolVersion;
+            public string scene_id;
+            public int n_frames;
+            public int fps;
+            public ArchiveIOUtils.CoordSystem coordinate_system;
+            public ArchiveIOUtils.MeshMetaJson scanned_mesh;
+            public DepthInfo depth;
+        }
+
+        [Serializable]
+        sealed class DepthInfo
+        {
+            public bool available;
+            public string format;
+            public int width;
+            public int height;
+        }
+
         WebSocket m_WebSocket;
-        int m_ExpectedFrames;
-        int m_ReceivedFrames;
+        ARSensorFlexSession m_Session;
+        IFrameLoaderState m_State;
+        int m_FramesToWait;
         bool m_Started;
+        bool m_HasScene;
+        int m_LastAdvertisedPlayHead = int.MinValue;
+        readonly ConcurrentQueue<PendingFramePacket> m_UploadQueue = new();
 
         public async void Start(ARSensorFlexSession session, IFrameLoaderState state, int framesToWait)
         {
-            if (m_Started) return;
+            if (m_Started)
+                return;
 
             m_Started = true;
-            m_ExpectedFrames = state.BufSize;
-            state.AllocateLinearFrames(state.BufSize);
+            m_Session = session;
+            m_State = state;
+            m_FramesToWait = framesToWait;
 
-            Debug.Log($"[SF] WebSocket connecting to {session.WebSocketUrl}, requesting {state.BufSize} frames.");
+            state.TotalFrames = int.MaxValue;
+            state.AllocateRingBuffer();
+
+            Debug.Log($"[SF] WebSocket connecting to {session.WebSocketUrl}");
             m_WebSocket = new WebSocket(session.WebSocketUrl);
 
-            m_WebSocket.OnOpen += () =>
-            {
-                Debug.Log("[SF] WebSocket connected.");
-                _ = m_WebSocket.SendText($"GET_FRAMES {m_ExpectedFrames}");
-            };
+            m_WebSocket.OnOpen += HandleOpen;
             m_WebSocket.OnError += error => Debug.LogError("[SF] WebSocket error: " + error);
             m_WebSocket.OnClose += code => Debug.Log("[SF] WebSocket closed: " + code);
-            m_WebSocket.OnMessage += message => HandleMessage(state, message);
+            m_WebSocket.OnMessage += HandleMessage;
 
             try
             {
                 await m_WebSocket.Connect();
             }
-            catch (Exception e)
+            catch (Exception exception)
             {
-                Debug.LogError("[SF] WebSocket connect exception: " + e);
+                Debug.LogError("[SF] WebSocket connect exception: " + exception);
             }
         }
 
-        void HandleMessage(IFrameLoaderState state, byte[] message)
+        void HandleOpen()
         {
-            if (message == null || message.Length < 5) return;
-
-            int frameIndex = BitConverter.ToInt32(message, 0);
-            if (frameIndex < 0 || frameIndex >= state.Frames.Length)
+            var helloMessage = new HelloMessage
             {
-                Debug.LogWarning($"[SF] WS out-of-range frameIndex={frameIndex}");
-                return;
-            }
+                requestedBufferSize = m_State.BufSize,
+                framesToWarm = m_FramesToWait,
+                loop = m_Session != null && m_Session.LoopSequence,
+                wantDepth = m_Session != null && m_Session.DepthEnabled
+            };
 
-            int imageLen = message.Length - 4;
-            var imageBytes = new byte[imageLen];
-            Buffer.BlockCopy(message, 4, imageBytes, 0, imageLen);
-
-            var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-            if (!tex.LoadImage(imageBytes))
-            {
-                Debug.LogWarning($"[SF] WS failed to decode frame {frameIndex}");
-                UnityEngine.Object.Destroy(tex);
-                return;
-            }
-
-            tex.Apply();
-
-            if (state.Frames[frameIndex] != null)
-            {
-                UnityEngine.Object.Destroy(state.Frames[frameIndex]);
-            }
-            else
-            {
-                m_ReceivedFrames++;
-            }
-
-            state.Frames[frameIndex] = tex;
-            if (m_ReceivedFrames >= m_ExpectedFrames)
-            {
-                state.TotalFrames = m_ExpectedFrames;
-                state.IsReady = true;
-                Debug.Log($"[SF] WebSocket preload complete: {m_ReceivedFrames}/{m_ExpectedFrames} frames.");
-            }
+            _ = m_WebSocket.SendText(JsonUtility.ToJson(helloMessage));
         }
 
-        public void DrainMainThreadWork() { }
+        void HandleMessage(byte[] messageBytes)
+        {
+            if (messageBytes == null || messageBytes.Length == 0)
+                return;
+
+            if (messageBytes[0] == (byte)'{' || messageBytes[0] == (byte)'[')
+            {
+                HandleJsonMessage(Encoding.UTF8.GetString(messageBytes));
+                return;
+            }
+
+            HandleFrameMessage(messageBytes);
+        }
+
+        void HandleJsonMessage(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return;
+
+            if (!json.Contains("\"type\":\"scene\""))
+                return;
+
+            var sceneMessage = JsonUtility.FromJson<SceneMessage>(json);
+            if (sceneMessage == null)
+                return;
+
+            m_State.TotalFrames = sceneMessage.n_frames;
+            m_State.FrameInterval = 1.0 / Math.Max(1, sceneMessage.fps);
+            m_State.CoordConvMatrix = sceneMessage.coordinate_system != null
+                ? ArchiveIOUtils.ComputeConversionMatrix(
+                    sceneMessage.coordinate_system.handedness,
+                    sceneMessage.coordinate_system.forward)
+                : Matrix4x4.identity;
+            m_State.UseNegativeZForwardOpticalAxis =
+                string.Equals(sceneMessage.coordinate_system?.forward, "-Z", StringComparison.OrdinalIgnoreCase);
+
+            m_HasScene = true;
+            SendWindowUpdate(force: true);
+
+            Debug.Log(
+                $"[SF] WebSocket scene ready. scene={sceneMessage.scene_id} " +
+                $"frames={sceneMessage.n_frames} fps={sceneMessage.fps}");
+        }
+
+        void HandleFrameMessage(byte[] messageBytes)
+        {
+            if (messageBytes.Length < 22)
+            {
+                Debug.LogWarning("[SF] WebSocket frame packet too small.");
+                return;
+            }
+
+            uint magic = BitConverter.ToUInt32(messageBytes, 0);
+            byte version = messageBytes[4];
+            byte messageType = messageBytes[5];
+
+            if (magic != FrameMagic || version != 1 || messageType != 1)
+            {
+                Debug.LogWarning("[SF] Ignoring unknown WebSocket binary packet.");
+                return;
+            }
+
+            int globalFrameIndex = BitConverter.ToInt32(messageBytes, 6);
+            int rgbLength = BitConverter.ToInt32(messageBytes, 10);
+            int metaJsonLength = BitConverter.ToInt32(messageBytes, 14);
+            int depthLength = BitConverter.ToInt32(messageBytes, 18);
+
+            int expectedLength = 22 + rgbLength + metaJsonLength + depthLength;
+            if (expectedLength != messageBytes.Length)
+            {
+                Debug.LogWarning($"[SF] Invalid WebSocket frame packet length. expected={expectedLength} actual={messageBytes.Length}");
+                return;
+            }
+
+            int cursor = 22;
+
+            var rgbBytes = new byte[rgbLength];
+            Buffer.BlockCopy(messageBytes, cursor, rgbBytes, 0, rgbLength);
+            cursor += rgbLength;
+
+            var metaJsonBytes = new byte[metaJsonLength];
+            Buffer.BlockCopy(messageBytes, cursor, metaJsonBytes, 0, metaJsonLength);
+            cursor += metaJsonLength;
+
+            byte[] depthBytes = null;
+            if (depthLength > 0)
+            {
+                depthBytes = new byte[depthLength];
+                Buffer.BlockCopy(messageBytes, cursor, depthBytes, 0, depthLength);
+            }
+
+            m_UploadQueue.Enqueue(new PendingFramePacket
+            {
+                GlobalFrameIndex = globalFrameIndex,
+                RgbBytes = rgbBytes,
+                MetaJsonBytes = metaJsonBytes,
+                DepthBytes = depthBytes
+            });
+        }
+
+        public void DrainMainThreadWork()
+        {
+            int uploadedCount = 0;
+            while (uploadedCount < UploadBatchSize && m_UploadQueue.TryDequeue(out var pendingFrame))
+            {
+                int slot = pendingFrame.GlobalFrameIndex % m_State.BufSize;
+
+                if (m_State.Frames[slot] == null)
+                    m_State.Frames[slot] = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+
+                m_State.Frames[slot].LoadImage(pendingFrame.RgbBytes);
+                m_State.Frames[slot].Apply();
+
+                m_State.DepthBins[slot] = pendingFrame.DepthBytes;
+
+                if (pendingFrame.MetaJsonBytes != null && pendingFrame.MetaJsonBytes.Length > 0)
+                {
+                    string json = Encoding.UTF8.GetString(pendingFrame.MetaJsonBytes);
+                    var poseValues = ArchiveIOUtils.ExtractFloatsFromField(json, "pose");
+                    var intrinsicValues = ArchiveIOUtils.ExtractFloatsFromField(json, "intrinsic");
+
+                    if (poseValues != null && poseValues.Length >= 16)
+                        m_State.Poses[slot] = ArchiveIOUtils.FloatsToMatrix4x4(poseValues);
+
+                    if (intrinsicValues != null && intrinsicValues.Length >= 9)
+                    {
+                        m_State.Intrinsics[slot] = new Vector4(
+                            intrinsicValues[0],
+                            intrinsicValues[4],
+                            intrinsicValues[2],
+                            intrinsicValues[5]);
+                    }
+                }
+
+                m_State.SlotGlobalIdx[slot] = pendingFrame.GlobalFrameIndex;
+                m_State.SlotReady[slot] = true;
+                m_State.MarkBuffered(m_FramesToWait);
+
+                uploadedCount++;
+            }
+        }
 
         public void Dispatch()
         {
 #if !UNITY_WEBGL || UNITY_EDITOR
             m_WebSocket?.DispatchMessageQueue();
 #endif
+            SendWindowUpdate(force: false);
+        }
+
+        void SendWindowUpdate(bool force)
+        {
+            if (!m_HasScene || m_WebSocket == null)
+                return;
+
+            int playHead = m_State.PlayHead;
+            if (!force && playHead == m_LastAdvertisedPlayHead)
+                return;
+
+            m_LastAdvertisedPlayHead = playHead;
+
+            var windowMessage = new WindowMessage
+            {
+                playHead = playHead,
+                bufferSize = m_State.BufSize
+            };
+
+            _ = m_WebSocket.SendText(JsonUtility.ToJson(windowMessage));
         }
 
         public async Task StopAsync()
         {
-            if (m_WebSocket == null) return;
-
-            try
+            if (m_WebSocket != null)
             {
-                await m_WebSocket.Close();
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning("[SF] WebSocket close: " + e);
+                try
+                {
+                    await m_WebSocket.Close();
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogWarning("[SF] WebSocket close: " + exception);
+                }
             }
 
             m_WebSocket = null;
+            m_Started = false;
+            m_HasScene = false;
+            m_LastAdvertisedPlayHead = int.MinValue;
+
+            while (m_UploadQueue.TryDequeue(out _)) { }
         }
     }
 
@@ -397,7 +594,8 @@ namespace SensorFlex.Player.Library
             }
 
             string sceneId = ReadMeta(path, state);
-            if (string.IsNullOrEmpty(sceneId)) return;
+            if (string.IsNullOrEmpty(sceneId))
+                return;
 
             state.AllocateRingBuffer();
 
@@ -434,8 +632,8 @@ namespace SensorFlex.Player.Library
                 }
 
                 string json;
-                using (var sr = new StreamReader(metaEntry.Open()))
-                    json = sr.ReadToEnd();
+                using (var streamReader = new StreamReader(metaEntry.Open()))
+                    json = streamReader.ReadToEnd();
 
                 var meta = JsonUtility.FromJson<ArchiveIOUtils.SceneMetaJson>(json);
                 state.TotalFrames = meta.n_frames;
@@ -462,9 +660,9 @@ namespace SensorFlex.Player.Library
 
                 return meta.scene_id;
             }
-            catch (Exception e)
+            catch (Exception exception)
             {
-                Debug.LogError("[SF] ZIP meta read error: " + e);
+                Debug.LogError("[SF] ZIP meta read error: " + exception);
                 return null;
             }
         }
@@ -572,7 +770,8 @@ namespace SensorFlex.Player.Library
                         var rgbEntry = archive.GetEntry(prefix + "rgb.jpg");
                         var metaEntry = archive.GetEntry(prefix + "meta.json");
                         var depthEntry = archive.GetEntry(prefix + "depth.bin");
-                        if (rgbEntry == null || metaEntry == null) continue;
+                        if (rgbEntry == null || metaEntry == null)
+                            continue;
 
                         if (!m_LoggedFirstFrameFound)
                         {
@@ -580,17 +779,22 @@ namespace SensorFlex.Player.Library
                             m_LoggedFirstFrameFound = true;
                         }
 
-                        Enqueue(globalOffset + frameIndex, ArchiveIOUtils.ReadEntry(rgbEntry), ArchiveIOUtils.ReadEntry(metaEntry),
+                        Enqueue(
+                            globalOffset + frameIndex,
+                            ArchiveIOUtils.ReadEntry(rgbEntry),
+                            ArchiveIOUtils.ReadEntry(metaEntry),
                             depthEntry != null ? ArchiveIOUtils.ReadEntry(depthEntry) : null);
                     }
                 }
-                catch (Exception e)
+                catch (Exception exception)
                 {
-                    Debug.LogError("[SF] ZIP loader error: " + e);
+                    Debug.LogError("[SF] ZIP loader error: " + exception);
                     return;
                 }
 
-                if (!looping) break;
+                if (!looping)
+                    break;
+
                 iteration++;
             }
         }
@@ -621,7 +825,8 @@ namespace SensorFlex.Player.Library
 
         public void DrainMainThreadWork()
         {
-            if (m_UploadQueue == null) return;
+            if (m_UploadQueue == null)
+                return;
 
             int uploaded = 0;
             while (uploaded < UploadBatchSize && m_UploadQueue.TryDequeue(out var item))
@@ -640,8 +845,10 @@ namespace SensorFlex.Player.Library
                     string json = Encoding.UTF8.GetString(item.Meta);
                     var pose = ArchiveIOUtils.ExtractFloatsFromField(json, "pose");
                     var intr = ArchiveIOUtils.ExtractFloatsFromField(json, "intrinsic");
-                    if (pose != null && pose.Length >= 16) m_State.Poses[slot] = ArchiveIOUtils.FloatsToMatrix4x4(pose);
-                    if (intr != null && intr.Length >= 9) m_State.Intrinsics[slot] = new Vector4(intr[0], intr[4], intr[2], intr[5]);
+                    if (pose != null && pose.Length >= 16)
+                        m_State.Poses[slot] = ArchiveIOUtils.FloatsToMatrix4x4(pose);
+                    if (intr != null && intr.Length >= 9)
+                        m_State.Intrinsics[slot] = new Vector4(intr[0], intr[4], intr[2], intr[5]);
                 }
 
                 m_State.SlotGlobalIdx[slot] = item.FrameIndex;
