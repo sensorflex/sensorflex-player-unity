@@ -9,19 +9,20 @@
 //   OcclusionSubsystem (TryGetFrame / GetTextureDescriptors)
 //     → AROcclusionManager (frameReceived event)
 //       → ARShaderOcclusion (sets globals each frame):
-//           _EnvironmentDepth              – RFloat texture, metric depth in metres
-//           _NdcLinearConversionParameters – (x=invDepthFactor, y=depthOffset)
-//           _IsOcclusionOn                 – 1 when active, 0 otherwise
+//           _EnvironmentDepth – RFloat texture, metric depth in metres
+//           _IsOcclusionOn    – 1 when active, 0 otherwise
 //     → this shader samples _EnvironmentDepth and outputs SV_Depth
 //
-// Depth conversion (matching AR Foundation Utils include):
-//   symmetricNDC = _NdcLinearConversionParameters.x / metricDepth
-//                - _NdcLinearConversionParameters.y
-//   ndc01        = (symmetricNDC + 1.0) * 0.5
-//   bufferDepth  = UNITY_REVERSED_Z ? (1 - ndc01) : ndc01
+// Depth conversion (identical to Apple's ARKit background shader):
+//   Uses Unity's built-in _ZBufferParams (always in sync with the active
+//   projection matrix) and _ProjectionParams.y (near clip plane, metres).
+//   bufferDepth = (1 / _ZBufferParams.z) * (1/metricDepth - _ZBufferParams.w)
+//   This formula maps [near, far] → [1, 0] on reversed-Z platforms (Metal,
+//   D3D) and [0, 1] on OpenGL — no UNITY_REVERSED_Z branching required.
 //
-// Pixels with metricDepth == 0 (invalid / no LiDAR return) write the far
-// plane depth so virtual objects there are never incorrectly occluded.
+// Pixels with metricDepth == 0 (invalid / no LiDAR return), or closer than
+// the near clip plane, write the far-plane depth so virtual objects there
+// are never incorrectly occluded.
 //
 // Requires:
 //   • ARBackgroundRendererFeature in the active URP renderer asset
@@ -69,10 +70,6 @@ Shader "SensorFlex/CameraBackground"
             TEXTURE2D(_EnvironmentDepth);
             SAMPLER(sampler_EnvironmentDepth);
 
-            // x = -2*far*near/(far-near), y = -(far+near)/(far-near)
-            // Set globally by ARShaderOcclusion from the XROcclusionFrame near/far values
-            float4 _NdcLinearConversionParameters;
-
             // 1 when ARShaderOcclusion is active and depth data is valid, 0 otherwise
             int _IsOcclusionOn;
 
@@ -94,19 +91,6 @@ Shader "SensorFlex/CameraBackground"
                 float depth : SV_Depth;
             };
 
-            // Convert metric linear eye depth (metres) to the platform depth buffer value.
-            float MetricDepthToBufferDepth(float metricDepth)
-            {
-                float symmetricNDC = _NdcLinearConversionParameters.x / metricDepth
-                                   - _NdcLinearConversionParameters.y;
-                float ndc01 = (symmetricNDC + 1.0) * 0.5;
-                #if UNITY_REVERSED_Z
-                    return 1.0 - ndc01;
-                #else
-                    return ndc01;
-                #endif
-            }
-
             // Far-plane depth constant (objects beyond this are never occluded).
             float FarDepth()
             {
@@ -115,6 +99,18 @@ Shader "SensorFlex/CameraBackground"
                 #else
                     return 1.0;
                 #endif
+            }
+
+            // Converts metric linear eye depth (metres) to the platform depth buffer value.
+            // Identical to Apple's ARKit background shader ConvertDistanceToDepth formula.
+            // _ZBufferParams is set by Unity's rendering pipeline from the active projection
+            // matrix, so it is always in sync — no dependency on ARShaderOcclusion params.
+            // Works correctly for both UNITY_REVERSED_Z and non-reversed-Z without branching.
+            float MetricDepthToBufferDepth(float metricDepth)
+            {
+                // Distances below the near clip plane have undefined projection; push to far.
+                if (metricDepth < _ProjectionParams.y) return FarDepth();
+                return (1.0 / _ZBufferParams.z) * ((1.0 / metricDepth) - _ZBufferParams.w);
             }
 
             Varyings vert(Attributes input)
