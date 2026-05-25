@@ -1,3 +1,59 @@
+// ScannedSceneMeshLoading.cs — loads and parses a static 3-D mesh embedded in a SensorFlex ZIP archive.
+//
+// Entry point: ScannedSceneMeshLoadOperation.Start(session). It reads meta.json from the ZIP,
+// locates the declared scanned_mesh .ply file, then kicks off a background Task to parse it.
+// Each Unity frame the caller polls TryComplete() — when the task finishes the raw
+// ScannedSceneMeshData is uploaded to a Unity Mesh on the main thread.
+//
+// PlyMeshReader handles the actual PLY decoding. It supports ASCII and binary-little-endian
+// formats, polygon faces of any valence (fan-triangulated), and the standard vertex attributes
+// x/y/z, nx/ny/nz, red/green/blue/alpha. After parsing, ApplyCoordinateConversion() transforms
+// all positions and normals through the archive's coord-system matrix; if the transformation
+// changes handedness, winding order is flipped to keep normals outward-facing.
+//
+// Class relationship diagram:
+//
+//  ┌──────────────────────────────────────────────────────────────────┐
+//  │             ScannedSceneMeshLoadOperation                        │
+//  │  ──────────────────────────────────────────────────────────────  │
+//  │  + Start(session) : ScannedSceneMeshLoadOperation  [static]      │
+//  │      reads ZIP meta.json, resolves .ply path, launches Task      │
+//  │  + TryComplete(out Mesh) : bool                                  │
+//  │      polls Task; on completion calls BuildUnityMesh()            │
+//  │                                                                  │
+//  │  holds ──────────────────────────────────────────────────────►   │
+//  │         Task<ScannedSceneMeshData>   (background PLY parse)      │
+//  └──────────────────────┬───────────────────────────────────────────┘
+//                         │ calls (on background thread)
+//                         ▼
+//  ┌─────────────────────────────────────────────────────────┐
+//  │  «static class»  PlyMeshReader                          │
+//  │  ─────────────────────────────────────────────────────  │
+//  │  + Parse(bytes, coordConvMatrix) : ScannedSceneMeshData │
+//  │      ├─ ParseHeader()  → Header (format, counts, props) │
+//  │      ├─ ParseAscii()           ─┐                       │
+//  │      └─ ParseBinaryLittleEndian()  ─► ScannedSceneMesh  │
+//  │                                    Data + coordinate   │
+//  │  internal types:                                        │
+//  │    Header          (PLY header metadata)                │
+//  │    PlyProperty     (name / type / isList per field)     │
+//  │    PlyFormat enum  (Ascii | BinaryLittleEndian)         │
+//  └──────────────────────────┬──────────────────────────────┘
+//                             │ produces
+//                             ▼
+//  ┌──────────────────────────────────────────┐
+//  │  ScannedSceneMeshData                    │
+//  │  ──────────────────────────────────────  │
+//  │  Vertices  : Vector3[]                   │
+//  │  Normals   : Vector3[]  (nullable)       │
+//  │  Colors    : Color32[]  (nullable)       │
+//  │  Triangles : int[]                       │
+//  └──────────────────────────────────────────┘
+//                             │ consumed by BuildUnityMesh()
+//                             ▼
+//                      Unity Mesh object
+//                  (returned to caller via TryComplete)
+
 using System;
 using System.Collections.Generic;
 using System.Globalization;

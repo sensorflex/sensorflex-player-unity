@@ -17,214 +17,185 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
   Defines `SensorFlexSettings`, the runtime configuration entry point. It selects the frame source mode, preload count, FPS, optional session alignment, and optional depth settings.
 
 - `Runtime/ARSensorFlexSession.cs`
-  Primary public host-app integration component. It is intended to be attached to `XROrigin` and combines:
-  - replay camera rig driving from `PoseBridge`
-  - scanned mesh instantiation and rendering
-  - camera clip-plane overrides
-  - session alignment application on the active `XROrigin`
+  Primary host-app integration component. Attach to `XROrigin` (or any scene object). Drives the replay camera rig by consuming `PoseBridge` pose events and applying position/rotation to the `XROrigin.CameraFloorOffsetObject`. Also applies session alignment transform and clip-plane overrides. Does **not** handle mesh instantiation — see `ARSensorFlexSceneMesh`.
+
+- `Runtime/ARSensorFlexSceneMesh.cs`
+  Scene mesh integration component. Attach to any child of `XROrigin`. Listens to `ScannedSceneMeshBridge.OnMeshReady` and instantiates the loaded PLY mesh as a `MeshFilter`/`MeshRenderer` under its own transform. Supports an optional material override and optional `MeshCollider`.
 
 - `Runtime/Subsystem/Camera.cs`
-  Owns playback timing and exposes camera frames to AR Foundation. It creates `FrameLoader`, advances playback, updates intrinsics, computes the replay projection matrix from recorded per-frame intrinsics, and pushes poses into `PoseBridge`.
+  Owns playback timing and exposes camera frames to AR Foundation. Creates `FrameLoader`, advances playback each frame, updates intrinsics and the projection matrix from recorded per-frame intrinsics, pushes poses into `PoseBridge`, and publishes the scanned mesh via `ScannedSceneMeshBridge`.
 
 - `Runtime/Subsystem/Depth.cs`
-  Exposes environment depth through `XROcclusionSubsystem`. Today this is implemented for file-system depth images and synchronized to camera frame progression via `OnFramesReady`.
+  Exposes environment depth through `XROcclusionSubsystem`. Implemented for FileSystem depth images only; synchronized to camera frame progression via `OnFramesReady`. WebSocket mode is not supported.
 
 - `Runtime/Subsystem/Session.cs`
   Provides a minimal `XRSessionSubsystem` implementation so the package can participate in the XR lifecycle.
 
 - `Runtime/Bridges/PoseBridge.cs`
-  Acts as a public static pose handoff for host app code that wants the current camera pose without going through AR Foundation pose APIs.
+  Static event bridge carrying camera poses from `CameraSubsystem` to scene components. Fires `OnPoseUpdated` each frame; `ARSensorFlexSession` subscribes to drive the camera rig.
 
 - `Runtime/Bridges/ScannedSceneMeshBridge.cs`
-  Carries the loaded scene mesh from the package runtime to public scene components such as `ARSensorFlexSession`.
+  Static event bridge carrying the loaded `Mesh` from `CameraSubsystem` to scene components. Fires `OnMeshReady` once; `ARSensorFlexSceneMesh` subscribes to instantiate the mesh.
 
 - `Runtime/Library/FrameLoading.cs`
-  Contains the frame-loading orchestration and backend abstraction:
-  - `FrameLoader`: framework-facing facade used by the camera subsystem
-  - `IFrameLoaderState`: shared data contract between the facade and backends
+  Frame-loading orchestration and backend abstraction:
+  - `FrameLoader`: subsystem-facing facade
+  - `IFrameLoaderState`: shared data contract between facade and backends
   - `IFrameLoaderBackend`: backend contract
   - `FileSystemFrameLoaderBackend`
-  - `WebSocketFrameLoaderBackend`
   - `ZipFrameLoaderBackend`
+  - `WebSocketFrameLoaderBackend`
 
 - `Runtime/Library/ArchiveIOUtils.cs`
   Stateless helpers for archive reads, JSON float extraction, matrix construction, pose conversion, and projection construction from recorded intrinsics.
 
 - `Runtime/Library/ScannedSceneMeshLoading.cs`
-  Scene-mesh loading path for ZIP archives. It parses the packaged PLY mesh, converts coordinates into Unity space, preserves vertex colors, and builds the runtime `Mesh`.
+  Scene-mesh loading path for ZIP archives. Parses the packaged PLY mesh on a background thread, converts coordinates into Unity space, preserves vertex colors, and builds the runtime `Mesh`.
 
 ## High-Level Data Flow
 
 1. Unity XR Management initializes `Loader`.
-2. `Loader` creates and starts the custom camera, session, and occlusion subsystems.
-3. `CameraSubsystem.CameraDataProvider` loads `SensorFlexSettings`.
-4. The camera provider begins scene-mesh loading for ZIP archives and publishes the result through `ScannedSceneMeshBridge`.
-5. The camera provider creates `FrameLoader`.
-6. `FrameLoader` selects a backend based on `frameSourceMode`.
-7. The selected backend fills shared loader state with textures and, where available, pose/intrinsics/depth data.
-8. The camera provider advances playback on Unity's main thread and publishes:
-   - color textures via `XRCameraSubsystem`
-   - intrinsics via `TryGetIntrinsics`
-   - projection matrices derived from recorded per-frame intrinsics via AR Foundation camera APIs
-   - camera timing and frame state via AR Foundation camera APIs
-   - pose via the public `PoseBridge` API
-9. `OcclusionSubsystem` optionally publishes depth textures in lock-step with camera playback through `XROcclusionSubsystem`.
-10. `ARSensorFlexSession` consumes `PoseBridge` and `ScannedSceneMeshBridge` to drive the replay camera rig and instantiate the packaged scanned mesh under `XROrigin`.
-11. Host applications primarily consume data through AR Foundation managers and the `ARSensorFlexSession` component; `PoseBridge` remains a narrower direct API for advanced use.
+2. `Loader` creates and starts the camera, session, and occlusion subsystems.
+3. `CameraSubsystem.CameraDataProvider` resolves the active `ARSensorFlexSession` for config.
+4. For ZIP archives, the camera provider starts `ScannedSceneMeshLoadOperation` on a background thread and publishes the result via `ScannedSceneMeshBridge` once complete.
+5. The camera provider creates `FrameLoader` and selects a backend based on `FrameSourceMode`.
+6. The selected backend fills shared loader state with textures and, where available, pose/intrinsics/depth data.
+7. The camera provider advances playback each Unity frame and publishes data through **two parallel paths**:
 
-## ASCII Diagram
+   **Path 1 — AR Foundation subsystem APIs:**
+   - Color textures → `XRCameraSubsystem` → `ARCameraManager` / background rendering
+   - Per-frame intrinsics → `TryGetIntrinsics`
+   - Projection matrix derived from intrinsics → AR Foundation camera APIs
+   - Frame timestamp and camera state → AR Foundation camera APIs
+   - Environment depth → `XROcclusionSubsystem` (FileSystem mode only)
+   - Session tracking state → `XRSessionSubsystem`
 
-```text
-+--------------------------------------------------------------------------+
-| Internal Runtime                                                         |
-|                                                                          |
-|  +----------------------+                                                |
-|  | SensorFlexSettings   |                                                |
-|  | source/fps/alignment |                                                |
-|  +----------+-----------+                                                |
-|             |                                                            |
-|             v                                                            |
-|  +-------------------+        +------------------+                       |
-|  | Unity XR Manager  | -----> | Loader           |                       |
-|  | / AR Foundation   |        | XRLoaderHelper   |                       |
-|  +---------+---------+        +---+----------+---+                       |
-|            |                      |          |                           |
-|            v                      v          v                           |
-|   +--------+---------+   +--------+----+  +---+----------------+         |
-|   | CameraSubsystem  |   | Session      |  | OcclusionSubsystem |        |
-|   | playback owner   |   | Subsystem    |  | depth provider     |        |
-|   +----+--------+----+   +-------------+  +---+----------------+         |
-|        |        |                               ^                        |
-|        |        | PoseBridge.SetUnityPose()     | OnFramesReady          |
-|        |        v                               |                        |
-|        |   +----+-----------+                   |                        |
-|        |   | PoseBridge     |                   |                        |
-|        |   | public pose API|                   |                        |
-|        |   +----------------+                   |                        |
-|        |                                        |                        |
-|        |   +--------------------+               |                        |
-|        +-> | ScannedSceneMesh   |               |                        |
-|            | Bridge             |               |                        |
-|            +--------------------+               |                        |
-|                                                                          |
-|   +----+--------------------------------------+                          |
-|   | FrameLoader facade                        |                          |
-|   | exposes Frames / Poses / Intrinsics /     |                          |
-|   | Depth to runtime subsystems               |                          |
-|   +-------------------+-----------------------+                          |
-|                       |                                                  |
-|                       v                                                  |
-|          +------------+------------------------------+                   |
-|          | shared loader state + backend interface   |                   |
-|          +------------+------------------------------+                   |
-|                       |                                                  |
-|       +---------------+-------------------------------+                  |
-|       |               |                               |                  |
-|       v               v                               v                  |
-|   +---+----------+ +--+----------------+ +------------+-----------+      |
-|   | FileSystem   | | WebSocket         | | ZIP                    |      |
-|   | preload imgs | | network preload   | | threaded stream/ring   |      |
-|   +---+----------+ +--+----------------+ +------------+-----------+      |
-|       |               |                               |                  |
-|       +---------------+---------------+---------------+                  |
-|                                       |                                  |
-|                                       v                                  |
-|                          +------------+------------+                     |
-|                          | ArchiveIOUtils          |                     |
-|                          | zip/json/pose/proj      |                     |
-|                          +-------------------------+                     |
-|                                                                          |
-+--------------------------------------------------------------------------+
+   **Path 2 — Bridge APIs:**
+   - Camera pose → `PoseBridge.SetUnityPose()` → `ARSensorFlexSession` drives `XROrigin` camera rig
+   - Scanned mesh → `ScannedSceneMeshBridge.SetMesh()` → `ARSensorFlexSceneMesh` renders mesh in scene
 
-  Primary host integration                        Secondary shortcut API
+8. Host applications consume AR Foundation data through standard managers and rendering components (Path 1), and replay motion and mesh through the package's scene components (Path 2).
 
-  +----------------------------------+        +----------------------+
-  | AR Foundation managers/components|        | Host app / game code |
-  | ARCameraManager, background,     |        | reading PoseBridge   |
-  | occlusion, XR consumers          |        +----------+-----------+
-  +----------------+-----------------+                   ^
-                   ^                                     |
-                   |                                     |
-     +-------------+--------------+                      |
-     |                            |                      |
-     | camera color / intrinsics  | latest Unity pose   |
-     | projection / session       | via PoseBridge      |
-     | environment depth          |                      |
-     |                            |                      |
-  +--+---------------+     +------+-------+              |
-  | CameraSubsystem  |     | PoseBridge   |--------------+
-  +--------+---------+     | public API   |
-           |               +--------------+
-           |
-           v
-  +--------+----------------------+
-  | ARSensorFlexSession           |
-  | public host integration       |
-  | - drives replay camera rig    |
-  | - instantiates scanned mesh   |
-  | - applies clip-plane override |
-  | - applies XROrigin alignment  |
-  +--------+----------------------+
-           ^
-           |
-  +--------+----------------------+
-  | ScannedSceneMeshBridge        |
-  +-------------------------------+
+## Architecture Diagram
 
-  `CameraSubsystem`, `OcclusionSubsystem`, and `SessionSubsystem`
-  publish into the AR Foundation-facing path, while `ARSensorFlexSession`
-  is the main package component for host-scene setup.
+```
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  PACKAGE RUNTIME                                                        │
+  │                                                                         │
+  │  ┌──────────────────┐    ┌──────────────────────────────┐               │
+  │  │ SensorFlex       │    │ ARSensorFlexSession           │               │
+  │  │ Settings         │    │ (config + alignment source)   │               │
+  │  └────────┬─────────┘    └──────────────────────────────┘               │
+  │           │ read at startup                                              │
+  │           ▼                                                              │
+  │  ┌─────────────────┐                                                    │
+  │  │  XR Management  ├──► Loader ──────────────────────────┐              │
+  │  └─────────────────┘       │ creates                      │             │
+  │                    ┌───────┴──────────┐                   │             │
+  │                    ▼                  ▼                   ▼             │
+  │          ┌──────────────────┐  ┌─────────────┐  ┌────────────────────┐ │
+  │          │  CameraSubsystem │  │   Session   │  │ OcclusionSubsystem │ │
+  │          │                  │  │  Subsystem  │  │ (FileSystem only)  │ │
+  │          │  ┌─────────────┐ │  │ stub        │  │                    │ │
+  │          │  │ FrameLoader │ │  └─────────────┘  └────────────────────┘ │
+  │          │  │ ┌─────────┐ │ │                            │              │
+  │          │  │ │FileSys  │ │ │                            │              │
+  │          │  │ │ZIP      │ │ │                            │              │
+  │          │  │ │WebSocket│ │ │                            │              │
+  │          │  │ └────┬────┘ │ │                            │              │
+  │          │  │      │      │ │                            │              │
+  │          │  │ ArchiveIO   │ │                            │              │
+  │          │  │ Utils       │ │                            │              │
+  │          │  └─────────────┘ │                            │              │
+  │          └────────┬─────────┘                            │              │
+  │                   │                                      │              │
+  └───────────────────┼──────────────────────────────────────┼──────────────┘
+                      │ publishes via two paths               │
+                      │                                       │
+        ┌─────────────┴──────────────────┐                   │
+        │                                │                   │
+        ▼                                ▼                   ▼
+  ╔══════════════════════════════╗  ╔═══════════════════════════════════════╗
+  ║  PATH 1: AR Foundation       ║  ║  PATH 2: Bridges                     ║
+  ║  Subsystem APIs              ║  ║                                       ║
+  ║                              ║  ║  PoseBridge                           ║
+  ║  XRCameraSubsystem           ║  ║  ─────────────────────────────────   ║
+  ║  • color texture             ║  ║  CameraSubsystem calls                ║
+  ║  • intrinsics (fx fy cx cy)  ║  ║  SetUnityPose() each frame            ║
+  ║  • projection matrix         ║  ║         │                             ║
+  ║  • timestamp                 ║  ║         ▼                             ║
+  ║                              ║  ║  ARSensorFlexSession                  ║
+  ║  XROcclusionSubsystem ◄──────╫──╫──(subscribes OnPoseUpdated)          ║
+  ║  • depth texture (FileSystem)║  ║  drives XROrigin camera rig           ║
+  ║                              ║  ║                                       ║
+  ║  XRSessionSubsystem          ║  ║  ScannedSceneMeshBridge               ║
+  ║  • session tracking state    ║  ║  ─────────────────────────────────   ║
+  ║                              ║  ║  CameraSubsystem calls                ║
+  ║         │                    ║  ║  SetMesh() once on load               ║
+  ║         ▼                    ║  ║         │                             ║
+  ║  AR Foundation managers      ║  ║         ▼                             ║
+  ║  ARCameraManager             ║  ║  ARSensorFlexSceneMesh                ║
+  ║  AROcclusionManager          ║  ║  (subscribes OnMeshReady)             ║
+  ║  Standard AR app code        ║  ║  instantiates MeshFilter /            ║
+  ╚══════════════════════════════╝  ║  MeshRenderer in scene                ║
+                                    ╚═══════════════════════════════════════╝
 ```
 
 ## Host Application Integration
 
 There are two outward-facing publication paths:
 
-- Primary path: AR Foundation
-  The package publishes camera color, intrinsics, projection, session state, and optional environment depth through XR subsystem APIs. Host applications should generally consume this data through standard AR Foundation managers and rendering components.
+- **Path 1 — AR Foundation (primary)**
+  The package publishes camera color, intrinsics, projection, session state, and optional environment depth through standard XR subsystem APIs. Host applications consume this through `ARCameraManager`, `ARCameraBackground`, `AROcclusionManager`, and other AR Foundation components without any package-specific code.
 
-- Primary setup component: `ARSensorFlexSession`
-  For most host applications, the intended integration point is attaching `ARSensorFlexSession` to `XROrigin`. That component drives replay camera motion, instantiates the packaged scanned mesh, and applies package-level alignment and clip-plane behavior so app code does not need project-local helper scripts.
+- **Path 2 — Bridges (scene components)**
+  The package provides two scene components that consume bridge events:
+  - `ARSensorFlexSession` — attach to `XROrigin` to drive the replay camera rig from `PoseBridge` pose events. Also applies session-level alignment and clip-plane overrides.
+  - `ARSensorFlexSceneMesh` — attach to any child object to instantiate the scanned scene mesh from `ScannedSceneMeshBridge`. Supports material override and optional `MeshCollider`.
 
-- Secondary path: `PoseBridge`
-  `PoseBridge` is a direct static API for the latest Unity-space pose. It exists as a convenience escape hatch, but it is narrower and more coupled than the AR Foundation path.
+  For most host applications the intended integration is: one `ARSensorFlexSession` on `XROrigin`, one `ARSensorFlexSceneMesh` on a child object.
+
+- **`PoseBridge` and `ScannedSceneMeshBridge` as direct APIs**
+  Both bridges are public static APIs and can be subscribed to by arbitrary host code without using the package's scene components, for advanced or custom integration.
 
 ## Backend Responsibilities
 
 ### FileSystem
 
-- Resolves `imageFolder`
-- Loads and decodes all color images eagerly
+- Resolves `imageFolder` relative to `StreamingAssets`
+- Loads and decodes all color images eagerly at startup
 - Marks the loader ready once preload completes
 
 ### WebSocket
 
-- Connects to `webSocketUrl`
-- Requests a bounded set of frames
-- Decodes incoming image payloads into textures
-- Uses `DispatchWebSocket()` from the camera update loop
+- Connects asynchronously to `webSocketUrl`
+- Sends a `hello` handshake with buffer size and warm-up count
+- Receives a `scene` JSON message for metadata (FPS, frame count, coordinate system)
+- Receives binary frame packets identified by a 4-byte magic header (RGB + meta JSON + optional depth)
+- Drains decoded frames to GPU in batches of 3 per frame via `DrainUploadQueue()`
+- Sends `window` messages back to the server as `PlayHead` advances
 
 ### ZIP
 
-- Opens the archive and reads scene-level `meta.json`
+- Opens the archive and reads the root `meta.json` for scene metadata
 - Builds the coordinate conversion matrix from archive metadata
-- Streams frames on a background thread into a ring buffer
-- Publishes RGB, raw depth bytes, pose matrices, and intrinsics
-- Loads the packaged scanned mesh and publishes it through `ScannedSceneMeshBridge`
-- Uses `DrainUploadQueue()` on the main thread for texture upload
+- Streams frames on a dedicated background thread into a ring buffer
+- Back-pressure: the loader thread sleeps when the ring buffer is full
+- Publishes RGB, raw depth bytes, pose matrices, and intrinsics per frame
+- Loads the packaged scanned mesh on a background thread and publishes it via `ScannedSceneMeshBridge`
+- Main thread drains GPU uploads in batches of 3 per frame via `DrainUploadQueue()`
 
 ## Runtime Threading Model
 
 - Unity-facing subsystem methods run on the main thread.
-- ZIP archive frame reads happen on a dedicated background thread.
-- ZIP texture creation and upload still happen on the main thread.
-- WebSocket message dispatch is driven from the main thread through the camera subsystem.
-- ZIP mesh file reads and PLY parsing happen off the main thread before the mesh is built on the Unity side.
+- ZIP archive frame reads happen on a dedicated background thread (`SF-ZipLoader`).
+- ZIP and WebSocket texture creation and GPU upload happen on the main thread (via `DrainUploadQueue()`).
+- WebSocket message dispatch is driven from the main thread through the camera subsystem update loop.
+- ZIP mesh reads and PLY parsing happen on a background `Task` thread; the `Mesh` object is built on the main thread by `TryComplete()`.
 
 ## Current Design Constraints
 
-- `OcclusionSubsystem` currently supports file-system depth textures only.
-- ZIP depth is already loaded into `FrameLoader.DepthBins`, but not yet surfaced through `XROcclusionSubsystem`.
-- `PoseBridge` is a public API surface, but its backing state is package-global and not session-isolated.
-- `ARSensorFlexSession` is the intended public integration component, but some lower-level public surfaces still exist for advanced use and backwards compatibility.
-- `FrameLoader` is the integration seam between framework code and IO backends. New sources should be added as new `IFrameLoaderBackend` implementations rather than expanding the facade.
+- `OcclusionSubsystem` supports FileSystem depth images only. WebSocket depth is silently disabled.
+- ZIP depth bytes are loaded into `FrameLoader.DepthBins` but are not yet surfaced through `XROcclusionSubsystem`.
+- `PoseBridge` and `ScannedSceneMeshBridge` are package-global static APIs; they are not session-isolated.
+- `FrameLoader` is the integration seam between subsystem code and IO backends. New sources should be added as `IFrameLoaderBackend` implementations rather than expanding the facade.

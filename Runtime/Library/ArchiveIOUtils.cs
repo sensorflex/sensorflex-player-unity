@@ -1,3 +1,65 @@
+// ArchiveIOUtils.cs — shared low-level helpers for reading SensorFlex archive data.
+//
+// This is a pure static utility class; it holds no state. Every other class in the
+// Library namespace that touches ZIP entries, JSON payloads, or coordinate math
+// routes through here so the conversions stay in one place.
+//
+// Responsibilities:
+//   ZIP I/O      — ReadEntry() drains a ZipArchiveEntry into a byte[].
+//   JSON parsing — ExtractFloatsFromField() scans a JSON string for a named array
+//                  (including nested arrays like 4x4 matrices) without a full JSON
+//                  parser, using a bracket-depth walk + regex number extraction.
+//   Matrix math  — FloatsToMatrix4x4() packs a flat row-major float[16] into
+//                  Unity's column-major Matrix4x4.
+//   Coordinate   — ComputeConversionMatrix() builds the flip matrix C for right-handed
+//   conversion     -Z-forward sources (ARKit/OpenGL → Unity left-handed +Y-up +Z-forward).
+//                  ConvertToUnityPose() applies the symmetric formula M_unity = C·M·C,
+//                  then reads position/forward/up columns, optionally negating the
+//                  optical axis for -Z-forward cameras.
+//                  ComputeProjectionMatrix() converts pinhole intrinsics (fx,fy,cx,cy)
+//                  into an off-centre Unity projection matrix.
+//   DTO types    — SceneMetaJson, CoordSystem, MeshMetaJson, SourceMetaJson mirror
+//                  the JSON schema of meta.json inside the archive.
+//
+// Consumers and data flow:
+//
+//  ┌─────────────────────┐      ┌──────────────────────────────────┐
+//  │  ZipFrameLoader     │      │  WebSocketFrameLoaderBackend     │
+//  │  Backend            │      │                                  │
+//  │  (FrameLoading.cs)  │      │  (FrameLoading.cs)               │
+//  └────────┬────────────┘      └──────────────┬───────────────────┘
+//           │                                  │
+//           │  ReadEntry()                     │  ExtractFloatsFromField()
+//           │  ExtractFloatsFromField()         │  FloatsToMatrix4x4()
+//           │  FloatsToMatrix4x4()              │  ComputeConversionMatrix()
+//           │  ComputeConversionMatrix()        │
+//           └──────────────┬───────────────────┘
+//                          │
+//                          ▼
+//  ┌──────────────────────────────────────────────────────────────────┐
+//  │  «static class»  ArchiveIOUtils                                  │
+//  │  ────────────────────────────────────────────────────────────    │
+//  │  ReadEntry(entry)                  → byte[]                      │
+//  │  ExtractFloatsFromField(json,field) → float[]                    │
+//  │  FloatsToMatrix4x4(float[16])      → Matrix4x4                  │
+//  │  ComputeConversionMatrix(h,fwd)    → Matrix4x4                  │
+//  │  ConvertToUnityPose(src, C, flag)  → Pose                       │
+//  │  ComputeProjectionMatrix(intr,...) → Matrix4x4                  │
+//  │  GetScannedMeshMeta(meta)          → MeshMetaJson               │
+//  │                                                                  │
+//  │  DTO types (serialisable, mirror archive JSON schema):           │
+//  │    SceneMetaJson ──► CoordSystem                                 │
+//  │                  ──► MeshMetaJson   (scanned_mesh / mesh)        │
+//  │                  ──► SourceMetaJson (source)                     │
+//  └──────────────────────────────────────────────────────────────────┘
+//           │
+//           │  SceneMetaJson / MeshMetaJson also consumed by:
+//           ▼
+//  ┌──────────────────────────────────┐
+//  │  ScannedSceneMeshLoadOperation   │
+//  │  (ScannedSceneMeshLoading.cs)    │
+//  └──────────────────────────────────┘
+
 using System;
 using System.IO;
 using System.IO.Compression;
@@ -6,8 +68,6 @@ using UnityEngine;
 
 namespace SensorFlex.Player.Library
 {
-    // ── Static ZIP / JSON decoding helpers ───────────────────────────────────────
-
     /// <summary>
     /// Static helpers for ZIP entry reading, JSON float extraction, matrix packing,
     /// and coordinate-system conversion. Used by <see cref="FrameLoader"/> and

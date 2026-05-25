@@ -1,3 +1,53 @@
+// FrameLoading.cs — SensorFlex frame ingestion pipeline.
+//
+// FrameLoader is the single public surface: callers Start() it with an ARSensorFlexSession,
+// then each Unity frame call DrainUploadQueue() (main thread GPU upload) and
+// DispatchWebSocket() (WebSocket message pump). All source-specific I/O is hidden
+// behind IFrameLoaderBackend; the shared mutable buffer lives in IFrameLoaderState /
+// FrameLoaderState.
+//
+// Three backends are supported:
+//   FileSystem  — synchronous bulk load from StreamingAssets/<folder>/ at startup.
+//                 Allocates a linear Texture2D[]. Simple, no ring buffer needed.
+//   Zip         — background thread streams frames from a .zip archive into a ring
+//                 buffer. Main thread drains the upload queue in batches of 3 per frame.
+//                 Back-pressure: loader thread sleeps when the ring buffer is full.
+//   WebSocket   — async connection to a server; receives binary frame packets and JSON
+//                 scene/window messages. Same ring-buffer drain pattern as Zip.
+//
+// Class relationship diagram:
+//
+//   ┌─────────────────────────────────────────────────────────────────────┐
+//   │                          FrameLoader                                │
+//   │  (public facade — owns IFrameLoaderState + IFrameLoaderBackend)     │
+//   └──────────┬──────────────────────────┬───────────────────────────────┘
+//              │ holds                    │ creates via CreateBackend()
+//              ▼                          ▼
+//   ┌──────────────────────┐   ┌──────────────────────────────────────────┐
+//   │  «interface»         │   │  «interface»                             │
+//   │  IFrameLoaderState   │   │  IFrameLoaderBackend                     │
+//   │  ─────────────────   │   │  ──────────────────                      │
+//   │  FrameInterval       │   │  Start(session, state, framesToWait)     │
+//   │  TotalFrames         │   │  DrainMainThreadWork()                   │
+//   │  BufSize             │   │  Dispatch()                              │
+//   │  IsReady             │   │  StopAsync()                             │
+//   │  Frames[]            │   └───────────┬──────────────────────────────┘
+//   │  DepthBins[]         │               │ implemented by
+//   │  Poses[]             │       ┌───────┼──────────────────────────┐
+//   │  Intrinsics[]        │       ▼       ▼                          ▼
+//   │  SlotReady[]         │  ┌─────────┐ ┌──────────┐ ┌────────────────────┐
+//   │  SlotGlobalIdx[]     │  │FileSystem│ │   Zip    │ │    WebSocket       │
+//   │  PlayHead            │  │Backend  │ │ Backend  │ │    Backend         │
+//   └──────────┬───────────┘  │         │ │          │ │                    │
+//              │ implemented by│sync load│ │bg thread │ │async WS conn       │
+//              ▼              │ at Start│ │+ ring buf│ │+ ring buf          │
+//   ┌──────────────────────┐  └─────────┘ └──────────┘ └────────────────────┘
+//   │  FrameLoaderState    │
+//   │  ────────────────    │   All three backends read/write IFrameLoaderState.
+//   │  (concrete impl)     │   FrameLoader proxies every property read through
+//   │  thread-safe PlayHead│   m_State so callers never touch the state directly.
+//   └──────────────────────┘
+
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
