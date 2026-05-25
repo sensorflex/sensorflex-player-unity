@@ -39,13 +39,7 @@ Shader "SensorFlex/CameraBackground"
 
     SubShader
     {
-        Tags
-        {
-            "Queue" = "Background"
-            "RenderType" = "Background"
-            "RenderPipeline" = "UniversalPipeline"
-            "IgnoreProjector" = "True"
-        }
+        Tags { "Queue" = "Background" "RenderType" = "Background" "RenderPipeline" = "UniversalPipeline" "IgnoreProjector" = "True" }
 
         Pass
         {
@@ -91,6 +85,9 @@ Shader "SensorFlex/CameraBackground"
                 float depth : SV_Depth;
             };
 
+            // Depth texture texel size (256x192 fixed for SensorFlex LiDAR depth).
+            static const float2 DepthTexelSize = float2(1.0 / 256.0, 1.0 / 192.0);
+
             // Far-plane depth constant (objects beyond this are never occluded).
             float FarDepth()
             {
@@ -113,6 +110,29 @@ Shader "SensorFlex/CameraBackground"
                 return (1.0 / _ZBufferParams.z) * ((1.0 / metricDepth) - _ZBufferParams.w);
             }
 
+            // Samples metric depth at uv, filling invalid pixels (0.0) from the nearest
+            // valid cardinal neighbour. LiDAR drops returns at surface edges; this prevents
+            // those invalid texels from punching holes in otherwise-occluded virtual objects.
+            // Returns 0.0 if the centre and all four neighbours are invalid.
+            float SampleDepthFilled(float2 uv)
+            {
+                float d = SAMPLE_TEXTURE2D(_EnvironmentDepth, sampler_EnvironmentDepth, uv).r;
+                if (d > 0.0) return d;
+
+                float d1 = SAMPLE_TEXTURE2D(_EnvironmentDepth, sampler_EnvironmentDepth, uv + float2( DepthTexelSize.x, 0)).r;
+                float d2 = SAMPLE_TEXTURE2D(_EnvironmentDepth, sampler_EnvironmentDepth, uv + float2(-DepthTexelSize.x, 0)).r;
+                float d3 = SAMPLE_TEXTURE2D(_EnvironmentDepth, sampler_EnvironmentDepth, uv + float2(0,  DepthTexelSize.y)).r;
+                float d4 = SAMPLE_TEXTURE2D(_EnvironmentDepth, sampler_EnvironmentDepth, uv + float2(0, -DepthTexelSize.y)).r;
+
+                // Use the minimum valid neighbour depth (closest real surface wins).
+                float minD = 1e10;
+                if (d1 > 0.0) minD = min(minD, d1);
+                if (d2 > 0.0) minD = min(minD, d2);
+                if (d3 > 0.0) minD = min(minD, d3);
+                if (d4 > 0.0) minD = min(minD, d4);
+                return minD < 1e9 ? minD : 0.0;
+            }
+
             Varyings vert(Attributes input)
             {
                 Varyings output;
@@ -128,9 +148,9 @@ Shader "SensorFlex/CameraBackground"
 
                 if (_IsOcclusionOn != 0)
                 {
-                    // _EnvironmentDepth is RFloat: .r holds metric depth in metres.
-                    // 0.0 means invalid (no LiDAR return) — push to far plane.
-                    float metricDepth = SAMPLE_TEXTURE2D(_EnvironmentDepth, sampler_EnvironmentDepth, input.uv).r;
+                    // SampleDepthFilled fills invalid LiDAR pixels (0.0) from neighbours,
+                    // preventing holes at surface edges. If still 0, push to far plane.
+                    float metricDepth = SampleDepthFilled(input.uv);
                     output.depth = metricDepth > 0.0
                         ? MetricDepthToBufferDepth(metricDepth)
                         : FarDepth();
@@ -148,12 +168,7 @@ Shader "SensorFlex/CameraBackground"
 
     SubShader
     {
-        Tags
-        {
-            "Queue" = "Background"
-            "RenderType" = "Background"
-            "IgnoreProjector" = "True"
-        }
+        Tags { "Queue" = "Background" "RenderType" = "Background" "IgnoreProjector" = "True" }
 
         Pass
         {
