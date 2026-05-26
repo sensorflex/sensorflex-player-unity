@@ -83,46 +83,8 @@ namespace SensorFlex.Player.Library
 
         public static ScannedSceneMeshLoadOperation Start(ARSensorFlexSession session)
         {
-            if (session == null || session.SourceMode != ARSensorFlexSession.FrameSourceMode.Zip)
-                return null;
-
-            string zipPath = session.ZipFilePath;
-            if (!Path.IsPathRooted(zipPath))
-                zipPath = Path.Combine(Application.streamingAssetsPath, zipPath);
-
-            if (!File.Exists(zipPath))
-            {
-                Debug.LogError($"[SF] ZIP not found for scanned mesh load: {zipPath}");
-                return null;
-            }
-
-            using var archive = new ZipArchive(File.OpenRead(zipPath), ZipArchiveMode.Read);
-            var sceneMetaEntry = FindSceneMetaEntry(archive);
-            if (sceneMetaEntry == null)
-                return null;
-
-            string json;
-            using (var sr = new StreamReader(sceneMetaEntry.Open()))
-                json = sr.ReadToEnd();
-
-            var meta = JsonUtility.FromJson<ArchiveIOUtils.SceneMetaJson>(json);
-            var meshMeta = ArchiveIOUtils.GetScannedMeshMeta(meta);
-            if (meshMeta == null || string.IsNullOrEmpty(meshMeta.path))
-                return null;
-
-            string meshEntryPath = $"{meta.scene_id}/{meshMeta.path}";
-            if (archive.GetEntry(meshEntryPath) == null)
-            {
-                Debug.LogError($"[SF] Scanned mesh entry missing: {meshEntryPath}");
-                return null;
-            }
-
-            Matrix4x4 coordConv = meta.coordinate_system != null
-                ? ArchiveIOUtils.ComputeConversionMatrix(meta.coordinate_system.handedness, meta.coordinate_system.forward)
-                : Matrix4x4.identity;
-
-            var task = Task.Run(() => LoadMeshData(zipPath, meshEntryPath, coordConv));
-            return new ScannedSceneMeshLoadOperation(task, meta.scene_id);
+            // No current source mode embeds a scanned mesh (SFZ format stores sessions only)
+            return null;
         }
 
         public bool TryComplete(out Mesh mesh)

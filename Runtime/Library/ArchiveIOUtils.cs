@@ -75,7 +75,7 @@ namespace SensorFlex.Player.Library
     /// </summary>
     internal static class ArchiveIOUtils
     {
-        // ── Scene meta.json DTOs ─────────────────────────────────────────────────
+        // ── Legacy scene meta.json DTOs (used by WebSocket backend) ─────────────
 
         [Serializable] internal class CoordSystem   { public string handedness; public string forward; public string up; }
         [Serializable] internal class MeshMetaJson  { public string path; public string format; public string units; public string coordinate_frame; }
@@ -91,6 +91,67 @@ namespace SensorFlex.Player.Library
             public MeshMetaJson scanned_mesh;
             public MeshMetaJson mesh;
         }
+
+        // ── SFZ session.json DTOs ─────────────────────────────────────────────────
+
+        [Serializable] internal class SfzDeviceJson { public string model; public string os; public string ar_framework; }
+
+        [Serializable] internal class SfzRgbChannelJson   { public int width; public int height; public string format; }
+        [Serializable] internal class SfzDepthChannelJson { public int width; public int height; public string format; public float invalid_value; }
+        [Serializable] internal class SfzChannelsJson     { public SfzRgbChannelJson rgb; public SfzDepthChannelJson depth; }
+
+        [Serializable] internal class SfzFramesMetadataJson { public int fps; public SfzChannelsJson channels; }
+
+        [Serializable] internal class SfzFileRefJson         { public string file; }
+        [Serializable] internal class SfzPoseJson            { public float[] position; public float[] rotation; }
+        [Serializable] internal class SfzIntrinsicsJson      { public float fx; public float fy; public float cx; public float cy; }
+        [Serializable] internal class SfzLightEstimationJson { public float ambient_intensity; public float color_temperature; }
+        [Serializable] internal class SfzCameraJson          { public SfzPoseJson pose; public SfzIntrinsicsJson intrinsics; }
+        [Serializable] internal class SfzFrameRecordJson
+        {
+            public long              timestamp_ns;
+            public SfzCameraJson     camera;
+            public SfzLightEstimationJson light_estimation;
+            public SfzFileRefJson    rgb;
+            public SfzFileRefJson    depth;
+        }
+
+        [Serializable] internal class SfzFramesTrackJson { public SfzFramesMetadataJson metadata; public SfzFrameRecordJson[] data; }
+
+        [Serializable] internal class SfzImuMetadataJson { public float sample_rate_hz; }
+        [Serializable] internal class SfzImuSampleJson
+        {
+            public long    timestamp_ns;
+            public float[] acceleration;
+            public float[] rotation_rate;
+            public float[] gravity;
+        }
+        [Serializable] internal class SfzImuTrackJson { public SfzImuMetadataJson metadata; public SfzImuSampleJson[] data; }
+
+        [Serializable] internal class SfzTracksJson   { public SfzFramesTrackJson frames; public SfzImuTrackJson imu; }
+        [Serializable] internal class SfzSessionJson
+        {
+            public string       version;
+            public string       session_id;
+            public string       start_time_utc;
+            public SfzDeviceJson device;
+            public SfzTracksJson tracks;
+        }
+
+        // ── SFZ helpers ───────────────────────────────────────────────────────────
+
+        internal static Matrix4x4 SfzPoseToMatrix4x4(SfzPoseJson pose)
+        {
+            if (pose?.position == null || pose.position.Length < 3 ||
+                pose.rotation  == null || pose.rotation.Length  < 4)
+                return Matrix4x4.identity;
+            var pos = new Vector3(pose.position[0], pose.position[1], pose.position[2]);
+            var rot = new Quaternion(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]);
+            return Matrix4x4.TRS(pos, rot, Vector3.one);
+        }
+
+        internal static Vector4 SfzIntrinsicsToVector4(SfzIntrinsicsJson intr) =>
+            intr != null ? new Vector4(intr.fx, intr.fy, intr.cx, intr.cy) : Vector4.zero;
 
         // ── ZIP entry reading ────────────────────────────────────────────────────
 

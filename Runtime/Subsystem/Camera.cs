@@ -184,7 +184,8 @@ namespace SensorFlex.Player.Subsystem
                     m_Loader.DrainUploadQueue();
                 }
 
-                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Zip)
+                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz ||
+                    session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo)
                     m_Loader.DrainUploadQueue();
 
                 if (Time.realtimeSinceStartupAsDouble < nextFrameTime)
@@ -213,7 +214,8 @@ namespace SensorFlex.Player.Subsystem
             bool UsesBufferedPlayback()
             {
                 return session != null &&
-                       (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Zip ||
+                       (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz ||
+                        session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo ||
                         session.SourceMode == ARSensorFlexSession.FrameSourceMode.WebSocket);
             }
 
