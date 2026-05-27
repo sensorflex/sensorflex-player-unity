@@ -676,6 +676,7 @@ namespace SensorFlex.Player.Library
             while (!m_StopLoading)
             {
                 int globalOffset = iteration * m_State.TotalFrames;
+                BeginLoadPass();
                 try
                 {
                     for (int i = 0; i < m_FrameRecords.Length && !m_StopLoading; i++)
@@ -700,6 +701,10 @@ namespace SensorFlex.Player.Library
                     Debug.LogError($"[SF] {BackendLabel} loader error: {exception}");
                     return;
                 }
+                finally
+                {
+                    EndLoadPass();
+                }
 
                 if (!looping)
                     break;
@@ -707,6 +712,13 @@ namespace SensorFlex.Player.Library
                 iteration++;
             }
         }
+
+        // Called once at the start of each pass through the frame sequence.
+        // Subclasses can open shared resources here (e.g. keep a ZIP archive open for the whole pass).
+        protected virtual void BeginLoadPass() { }
+
+        // Called after each pass (even on exception). Pair with BeginLoadPass().
+        protected virtual void EndLoadPass() { }
 
         void Enqueue(int globalFrameIndex, int recordIndex, byte[] jpg, byte[] depth)
         {
@@ -799,7 +811,8 @@ namespace SensorFlex.Player.Library
 
     internal sealed class SfzFrameLoaderBackend : SfzBackendBase
     {
-        string m_ArchivePath;
+        string     m_ArchivePath;
+        ZipArchive m_PassArchive;
 
         protected override string BackendLabel => "SFZ";
 
@@ -841,12 +854,23 @@ namespace SensorFlex.Player.Library
             }
         }
 
+        // Keep the archive open for the entire pass so the central directory is only parsed once.
+        protected override void BeginLoadPass()
+        {
+            m_PassArchive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
+        }
+
+        protected override void EndLoadPass()
+        {
+            m_PassArchive?.Dispose();
+            m_PassArchive = null;
+        }
+
         protected override byte[] ReadSessionFile(string relativePath)
         {
             try
             {
-                using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
-                var entry = archive.GetEntry($"session/{relativePath}");
+                var entry = m_PassArchive?.GetEntry($"session/{relativePath}");
                 return entry != null ? ArchiveIOUtils.ReadEntry(entry) : null;
             }
             catch (Exception e)
