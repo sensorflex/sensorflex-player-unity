@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.IO;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -9,18 +7,10 @@ using UnityEngine.XR.ARSubsystems;
 namespace SensorFlex.Player.Subsystem
 {
     /// <summary>
-    /// XROcclusionSubsystem provider that serves environment depth images from
-    /// a local folder in sync with the camera subsystem's frame sequence.
-    ///
-    /// Depth images are expected as PNG or JPG files. The R channel of each
-    /// pixel is interpreted as normalized linear depth (0 = near, 1 = far).
-    /// For true metric float depth, supply EXR files and extend LoadDepthFrame
-    /// to use ImageConversion / a custom loader.
-    ///
-    /// FileSystem mode: place depth images in StreamingAssets/<depthFolder>/
-    ///   named in the same sorted order as the paired colour frames.
-    /// WebSocket mode: not yet supported; depth is silently disabled.
-    /// </summary>
+    /// XROcclusionSubsystem provider that serves environment depth from the active
+    /// FrameLoader. Sfz/FileIo modes read float depth bins from the ring buffer.
+    /// WebSocket depth is not yet supported and is silently disabled.
+    ///</summary>
     public sealed class OcclusionSubsystem : XROcclusionSubsystem
     {
         const string SubsystemId = "SensorFlex-Occlusion";
@@ -51,13 +41,10 @@ namespace SensorFlex.Player.Subsystem
             static readonly int EnvironmentDepthPropertyId = Shader.PropertyToID("_EnvironmentDepth");
 
             ARSensorFlexSession session;
-            Texture2D[] preloadedDepthFrames;
             Texture2D m_CurrentDepthTexture;
-            int index;
             bool framesReady;
             bool m_HasBoundSession;
             bool m_LoggedWaitingForSession;
-            bool m_LoggedNormalizedDepthScaleWarning;
             float m_CurrentDepthWorldScale = 1f;
             bool m_IsSfzMode;
             Texture2D m_SfzDepthTexture;
@@ -174,8 +161,6 @@ namespace SensorFlex.Player.Subsystem
                 {
                     if (m_IsSfzMode)
                         EnsureSfzLoaderReady();
-                    else
-                        RefreshScaledDepthIfNeeded();
                     return;
                 }
 
@@ -209,87 +194,11 @@ namespace SensorFlex.Player.Subsystem
                     return;
                 }
 
-                if (session.SourceMode != ARSensorFlexSession.FrameSourceMode.FileSystem)
-                {
-                    Debug.LogWarning("[SF] OcclusionSubsystem: WebSocket depth not yet supported — depth disabled.");
-                    return;
-                }
-
-                LoadDepthFrames();
-            }
-
-            void RefreshScaledDepthIfNeeded()
-            {
-                if (session == null || !framesReady)
-                    return;
-
-                float latestScale = session.EffectiveDepthWorldScale;
-                if (Mathf.Approximately(latestScale, m_CurrentDepthWorldScale))
-                    return;
-
-                m_CurrentDepthWorldScale = latestScale;
-                m_LoggedNormalizedDepthScaleWarning = false;
-
-                ReleaseDepthFrames();
-                LoadDepthFrames();
-            }
-
-            void LoadDepthFrames()
-            {
-                string folder = session.DepthFolder;
-                if (!Path.IsPathRooted(folder))
-                    folder = Path.Combine(Application.streamingAssetsPath, folder);
-
-                if (!Directory.Exists(folder))
-                {
-                    Debug.LogWarning($"[SF] OcclusionSubsystem: depth folder not found: {folder}");
-                    return;
-                }
-
-                var files = new List<string>();
-                foreach (var file in Directory.GetFiles(folder))
-                {
-                    if (file.EndsWith(".png",  StringComparison.OrdinalIgnoreCase) ||
-                        file.EndsWith(".jpg",  StringComparison.OrdinalIgnoreCase) ||
-                        file.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
-                        file.EndsWith(".bin",  StringComparison.OrdinalIgnoreCase))
-                    {
-                        files.Add(file);
-                    }
-                }
-
-                files.Sort(StringComparer.Ordinal);
-
-                int count = Mathf.Min(session.PreloadFrameCount, files.Count);
-                if (count == 0)
-                {
-                    Debug.LogWarning($"[SF] OcclusionSubsystem: no depth images found in {folder}");
-                    return;
-                }
-
-                preloadedDepthFrames = new Texture2D[count];
-                for (int i = 0; i < count; i++)
-                    preloadedDepthFrames[i] = LoadDepthFrame(files[i], m_CurrentDepthWorldScale, ref m_LoggedNormalizedDepthScaleWarning);
-
-                index = 0;
-                m_CurrentDepthTexture = preloadedDepthFrames[0];
-                framesReady = true;
-
-                Debug.Log($"[SF] OcclusionSubsystem: loaded {count} depth frames from {folder} (worldScale={m_CurrentDepthWorldScale:0.####})");
+                Debug.LogWarning("[SF] OcclusionSubsystem: WebSocket depth not yet supported — depth disabled.");
             }
 
             void ReleaseDepthFrames()
             {
-                if (preloadedDepthFrames != null)
-                {
-                    foreach (var tex in preloadedDepthFrames)
-                    {
-                        if (tex != null)
-                            UnityEngine.Object.Destroy(tex);
-                    }
-                    preloadedDepthFrames = null;
-                }
-
                 if (m_SfzDepthTexture != null)
                 {
                     UnityEngine.Object.Destroy(m_SfzDepthTexture);
@@ -298,72 +207,8 @@ namespace SensorFlex.Player.Subsystem
 
                 m_CurrentDepthTexture = null;
                 framesReady = false;
-                index = 0;
                 m_IsSfzMode = false;
                 m_LastSfzPlayHead = -1;
-            }
-
-            static Texture2D LoadDepthFrame(string path, float depthWorldScale, ref bool loggedNormalizedDepthScaleWarning)
-            {
-                if (path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
-                    return LoadMetricDepthBin(path, depthWorldScale);
-
-                byte[] bytes = File.ReadAllBytes(path);
-                // LoadImage always decodes PNG/JPG into RGBA32.
-                // The R channel carries normalised depth [0,1].
-                if (!Mathf.Approximately(depthWorldScale, 1f) && !loggedNormalizedDepthScaleWarning)
-                {
-                    Debug.LogWarning(
-                        $"[SF] OcclusionSubsystem: world scale is {depthWorldScale:0.####}, " +
-                        $"but '{Path.GetFileName(path)}' is normalized PNG/JPG depth. " +
-                        "Metric scaling is only applied to raw float depth (.bin).");
-                    loggedNormalizedDepthScaleWarning = true;
-                }
-
-                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                tex.LoadImage(bytes);
-                tex.Apply();
-                return tex;
-            }
-
-            static Texture2D LoadMetricDepthBin(string path, float depthWorldScale)
-            {
-                byte[] bytes = File.ReadAllBytes(path);
-                int expectedBytes = RawDepthWidth * RawDepthHeight * sizeof(float);
-                if (bytes.Length != expectedBytes)
-                {
-                    Debug.LogWarning(
-                        $"[SF] OcclusionSubsystem: unexpected depth.bin size for '{path}'. " +
-                        $"Expected {expectedBytes} bytes, got {bytes.Length}.");
-                    return null;
-                }
-
-                var depthValues = new float[RawDepthWidth * RawDepthHeight];
-                Buffer.BlockCopy(bytes, 0, depthValues, 0, bytes.Length);
-
-                if (!BitConverter.IsLittleEndian)
-                {
-                    for (int i = 0; i < depthValues.Length; i++)
-                    {
-                        byte[] valueBytes = BitConverter.GetBytes(depthValues[i]);
-                        Array.Reverse(valueBytes);
-                        depthValues[i] = BitConverter.ToSingle(valueBytes, 0);
-                    }
-                }
-
-                if (!Mathf.Approximately(depthWorldScale, 1f))
-                {
-                    for (int i = 0; i < depthValues.Length; i++)
-                    {
-                        if (depthValues[i] > 0f)
-                            depthValues[i] *= depthWorldScale;
-                    }
-                }
-
-                var tex = new Texture2D(RawDepthWidth, RawDepthHeight, TextureFormat.RFloat, false);
-                tex.SetPixelData(depthValues, 0);
-                tex.Apply(false, true);
-                return tex;
             }
 
             bool TryBuildCurrentDescriptor(out XRTextureDescriptor descriptor)
@@ -413,19 +258,7 @@ namespace SensorFlex.Player.Subsystem
             void AdvanceFrame()
             {
                 if (m_IsSfzMode)
-                {
                     UpdateSfzDepthTexture();
-                    return;
-                }
-
-                if (!framesReady || preloadedDepthFrames == null)
-                    return;
-
-                index++;
-                if (index >= preloadedDepthFrames.Length)
-                    index = session != null && session.LoopSequence ? 0 : preloadedDepthFrames.Length - 1;
-
-                m_CurrentDepthTexture = preloadedDepthFrames[index];
             }
 
             void EnsureSfzLoaderReady()

@@ -34,35 +34,28 @@ namespace SensorFlex.Player
 
         public enum FrameSourceMode
         {
-            FileSystem = 0,
             WebSocket = 1,
             Sfz = 2,
             FileIo = 3
         }
 
         [Header("Frame Source")]
-        [SerializeField] FrameSourceMode m_FrameSourceMode = FrameSourceMode.FileSystem;
+        [SerializeField] FrameSourceMode m_FrameSourceMode = FrameSourceMode.FileIo;
         [Tooltip("WebSocket endpoint used when the frame source mode is WebSocket.")]
         [SerializeField] string m_WebSocketUrl = "ws://localhost:3000";
         [Tooltip("Path to the .sfz archive. Can be absolute or relative to StreamingAssets.")]
         [SerializeField] string m_SfzFilePath = "";
         [Tooltip("Path to the SFZ session directory (containing session.json). Can be absolute or relative to StreamingAssets.")]
         [SerializeField] string m_FileIoPath = "";
-        [Tooltip("StreamingAssets-relative or absolute folder containing replay RGB frames.")]
-        [SerializeField] string m_ImageFolder = "DiskCam";
 
         [Header("Playback")]
         [Min(1)]
         [SerializeField] int m_PreloadFrameCount = 120;
         [SerializeField] bool m_LoopSequence = true;
-        [Min(1f)]
-        [SerializeField] float m_TargetFPS = 30f;
 
         [Header("Depth (Occlusion)")]
         [Tooltip("Enable the XROcclusionSubsystem to supply environment depth textures.")]
         [SerializeField] bool m_DepthEnabled = false;
-        [Tooltip("StreamingAssets-relative or absolute folder containing depth images aligned to the color frames.")]
-        [SerializeField] string m_DepthFolder = "DiskCamDepth";
 
         [Header("Session Alignment")]
         [SerializeField] SessionAlignmentSettings m_SessionAlignment = new();
@@ -79,12 +72,9 @@ namespace SensorFlex.Player
         internal string WebSocketUrl => m_WebSocketUrl;
         internal string SfzFilePath => m_SfzFilePath;
         internal string FileIoPath => m_FileIoPath;
-        internal string ImageFolder => m_ImageFolder;
         internal int PreloadFrameCount => Mathf.Max(1, m_PreloadFrameCount);
         internal bool LoopSequence => m_LoopSequence;
-        internal float TargetFPS => Mathf.Max(1f, m_TargetFPS);
         internal bool DepthEnabled => m_DepthEnabled;
-        internal string DepthFolder => m_DepthFolder;
         internal float EffectiveDepthWorldScale
         {
             get

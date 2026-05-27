@@ -7,11 +7,11 @@
 // FrameLoaderState.
 //
 // Three backends are supported:
-//   FileSystem  — synchronous bulk load from StreamingAssets/<folder>/ at startup.
-//                 Allocates a linear Texture2D[]. Simple, no ring buffer needed.
-//   Zip         — background thread streams frames from a .zip archive into a ring
+//   Zip (Sfz)   — background thread streams frames from a .zip archive into a ring
 //                 buffer. Main thread drains the upload queue in batches of 3 per frame.
 //                 Back-pressure: loader thread sleeps when the ring buffer is full.
+//   FileIo      — same as Zip but reads loose files from a session directory instead of
+//                 a ZIP archive.
 //   WebSocket   — async connection to a server; receives binary frame packets and JSON
 //                 scene/window messages. Same ring-buffer drain pattern as Zip.
 //
@@ -36,12 +36,12 @@
 //   │  Poses[]             │       ┌───────┼──────────────────────────┐
 //   │  Intrinsics[]        │       ▼       ▼                          ▼
 //   │  SlotReady[]         │  ┌─────────┐ ┌──────────┐ ┌────────────────────┐
-//   │  SlotGlobalIdx[]     │  │FileSystem│ │   Zip    │ │    WebSocket       │
-//   │  PlayHead            │  │Backend  │ │ Backend  │ │    Backend         │
-//   └──────────┬───────────┘  │         │ │          │ │                    │
-//              │ implemented by│sync load│ │bg thread │ │async WS conn       │
-//              ▼              │ at Start│ │+ ring buf│ │+ ring buf          │
-//   ┌──────────────────────┐  └─────────┘ └──────────┘ └────────────────────┘
+//   │  SlotGlobalIdx[]     │  │   Zip    │ │  FileIo  │ │    WebSocket       │
+//   │  PlayHead            │  │ Backend  │ │ Backend  │ │    Backend         │
+//   └──────────┬───────────┘  │          │ │          │ │                    │
+//              │ implemented by│bg thread │ │bg thread │ │async WS conn       │
+//              ▼              │+ ring buf│ │+ ring buf│ │+ ring buf          │
+//   ┌──────────────────────┐  └──────────┘ └──────────┘ └────────────────────┘
 //   │  FrameLoaderState    │
 //   │  ────────────────    │   All three backends read/write IFrameLoaderState.
 //   │  (concrete impl)     │   FrameLoader proxies every property read through
@@ -50,7 +50,6 @@
 
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
@@ -76,7 +75,6 @@ namespace SensorFlex.Player.Library
         bool[] SlotReady { get; set; }
         int[] SlotGlobalIdx { get; set; }
         int PlayHead { get; set; }
-        void AllocateLinearFrames(int count);
         void AllocateRingBuffer();
         void MarkBuffered(int framesToWait);
         void DestroyTextures();
@@ -109,11 +107,6 @@ namespace SensorFlex.Player.Library
         public FrameLoaderState(int bufSize)
         {
             BufSize = bufSize;
-        }
-
-        public void AllocateLinearFrames(int count)
-        {
-            Frames = new Texture2D[count];
         }
 
         public void AllocateRingBuffer()
@@ -198,7 +191,7 @@ namespace SensorFlex.Player.Library
             {
                 IsReady = false,
                 PlayHead = -1,
-                FrameInterval = 1.0 / Math.Max(1, session.TargetFPS)
+                FrameInterval = 1.0 / 30.0
             };
 
             m_Backend = CreateBackend(session.SourceMode);
@@ -231,66 +224,12 @@ namespace SensorFlex.Player.Library
         {
             return mode switch
             {
-                ARSensorFlexSession.FrameSourceMode.FileSystem => new FileSystemFrameLoaderBackend(),
-                ARSensorFlexSession.FrameSourceMode.Sfz        => new SfzFrameLoaderBackend(),
-                ARSensorFlexSession.FrameSourceMode.FileIo     => new FileIoFrameLoaderBackend(),
-                ARSensorFlexSession.FrameSourceMode.WebSocket  => new WebSocketFrameLoaderBackend(),
+                ARSensorFlexSession.FrameSourceMode.Sfz       => new SfzFrameLoaderBackend(),
+                ARSensorFlexSession.FrameSourceMode.FileIo    => new FileIoFrameLoaderBackend(),
+                ARSensorFlexSession.FrameSourceMode.WebSocket => new WebSocketFrameLoaderBackend(),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
             };
         }
-    }
-
-    internal sealed class FileSystemFrameLoaderBackend : IFrameLoaderBackend
-    {
-        public void Start(ARSensorFlexSession session, IFrameLoaderState state, int framesToWait)
-        {
-            string folder = session.ImageFolder;
-            if (!Path.IsPathRooted(folder))
-                folder = Path.Combine(Application.streamingAssetsPath, folder);
-
-            if (!Directory.Exists(folder))
-            {
-                Debug.LogError($"[SF] Folder not found: {folder}");
-                return;
-            }
-
-            var files = new List<string>();
-            foreach (var file in Directory.GetFiles(folder))
-            {
-                if (file.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
-                    file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
-                    file.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase))
-                {
-                    files.Add(file);
-                }
-            }
-
-            files.Sort(StringComparer.Ordinal);
-            if (files.Count == 0)
-            {
-                Debug.LogError($"[SF] No image files in {folder}");
-                return;
-            }
-
-            int count = Mathf.Min(state.BufSize, files.Count);
-            state.TotalFrames = count;
-            state.AllocateLinearFrames(count);
-
-            for (int i = 0; i < count; i++)
-            {
-                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                tex.LoadImage(File.ReadAllBytes(files[i]));
-                tex.Apply();
-                state.Frames[i] = tex;
-            }
-
-            state.IsReady = true;
-            Debug.Log($"[SF] FileSystem: loaded {count} frames from {folder}.");
-        }
-
-        public void DrainMainThreadWork() { }
-        public void Dispatch() { }
-        public Task StopAsync() => Task.CompletedTask;
     }
 
     internal sealed class WebSocketFrameLoaderBackend : IFrameLoaderBackend

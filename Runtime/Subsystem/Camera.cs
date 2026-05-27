@@ -57,7 +57,6 @@ namespace SensorFlex.Player.Subsystem
 
             double nextFrameTime;
             double frameInterval = 1.0 / 30.0;
-            int index = 0;
             long timestampNs = 0;
 
             const bool EnableProgrammaticLoadingOverlay = true;
@@ -194,7 +193,7 @@ namespace SensorFlex.Player.Subsystem
                     m_Loader.DrainUploadQueue();
 
                 // Execute a pending step-forward immediately when paused.
-                if (m_StartupStage == StartupStage.Playing && m_StepForwardPending && UsesBufferedPlayback())
+                if (m_StartupStage == StartupStage.Playing && m_StepForwardPending)
                 {
                     m_StepForwardPending = false;
                     ExecuteBufferedStep();
@@ -211,30 +210,7 @@ namespace SensorFlex.Player.Subsystem
 
                 nextFrameTime = Time.realtimeSinceStartupAsDouble + effectiveInterval;
 
-                if (UsesBufferedPlayback())
-                {
-                    UpdateBufferedFrame();
-                    return;
-                }
-
-                var frames = m_Loader.Frames;
-                if (frames == null || frames.Length == 0)
-                    return;
-
-                index++;
-                if (index >= frames.Length)
-                    index = session.LoopSequence ? 0 : frames.Length - 1;
-
-                LoadFrame(index);
-                OnFramesReady?.Invoke();
-            }
-
-            bool UsesBufferedPlayback()
-            {
-                return session != null &&
-                       (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz ||
-                        session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo ||
-                        session.SourceMode == ARSensorFlexSession.FrameSourceMode.WebSocket);
+                UpdateBufferedFrame();
             }
 
             bool EnsureSessionInitialized()
@@ -333,17 +309,6 @@ namespace SensorFlex.Player.Subsystem
                 OnFramesReady?.Invoke();
             }
 
-            void LoadFrame(int frameIndex)
-            {
-                var frames = m_Loader?.Frames;
-                if (frames == null || frameIndex < 0 || frameIndex >= frames.Length)
-                    return;
-
-                SetCurrentTexture(frames[frameIndex]);
-                timestampNs += (long)(frameInterval * 1_000_000_000L);
-                LatestTimestampNs = timestampNs;
-            }
-
             void PlayBufferedSlot(int slot)
             {
                 SetCurrentTexture(m_Loader.Frames[slot]);
@@ -414,9 +379,7 @@ namespace SensorFlex.Player.Subsystem
                 m_Loader.Start(session, maxFramesToLoad, FramesToWait);
                 ActiveLoader = m_Loader;
 
-                frameInterval = UsesBufferedPlayback()
-                    ? m_Loader.FrameInterval
-                    : 1.0 / Math.Max(1, session.TargetFPS);
+                frameInterval = m_Loader.FrameInterval;
 
                 Debug.Log($"[SF] Mode={session.SourceMode} FramesToWait={FramesToWait} BufferSize={maxFramesToLoad} FrameInterval={frameInterval:F4}s");
                 if (EnableProgrammaticLoadingOverlay)

@@ -50,16 +50,10 @@ namespace SensorFlexPlayer.Editor
                 }
                 EditorGUILayout.EndHorizontal();
             }
-            else // FileSystem
-            {
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_ImageFolder"));
-            }
 
             EditorGUILayout.Space();
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PreloadFrameCount"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
-            if (mode == ARSensorFlexSession.FrameSourceMode.FileSystem)
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_TargetFPS"));
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("World Alignment", EditorStyles.boldLabel);
@@ -75,8 +69,6 @@ namespace SensorFlexPlayer.Editor
 
             EditorGUILayout.Space();
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_DepthEnabled"));
-            if (mode == ARSensorFlexSession.FrameSourceMode.FileSystem)
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_DepthFolder"));
 
             EditorGUILayout.Space();
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_DriveReplayCamera"));
