@@ -381,13 +381,13 @@ namespace SensorFlex.Player.Subsystem
                     }
 
                     // Sequential advance — always move by exactly one frame so motion is smooth.
-                    int nextSeqNum = m_Loader.PlayHead + 1;
-                    int nextSlot   = nextSeqNum % m_Loader.BufSize;
-                    if (!m_Loader.SlotReady[nextSlot] || m_Loader.SlotGlobalIdx[nextSlot] != nextSeqNum)
+                    int nextSeqNum  = m_Loader.PlayHead + 1;
+                    int liveNextSlot = nextSeqNum % m_Loader.BufSize;
+                    if (!m_Loader.SlotReady[liveNextSlot] || m_Loader.SlotGlobalIdx[liveNextSlot] != nextSeqNum)
                         return; // frame not decoded yet
 
                     m_Loader.PlayHead = nextSeqNum;
-                    PlayBufferedSlot(nextSlot);
+                    PlayBufferedSlot(liveNextSlot);
                     OnFramesReady?.Invoke();
                     return;
                 }
