@@ -275,4 +275,4 @@ Converters from external datasets produce SensorFlex archives by:
 
 | Dataset | Converter |
 |---|---|
-| ScanNet++ (iPhone / ARKit) | `data_processing/scannetpp.py` |
+| ScanNet++ (iPhone / ARKit) | `data_processing/scannetpp_sfz.py` |
