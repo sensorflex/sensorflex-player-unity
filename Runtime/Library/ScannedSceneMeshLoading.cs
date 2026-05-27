@@ -189,6 +189,16 @@ namespace SensorFlex.Player.Library
             return true;
         }
 
+        // TODO: remove once the SFZ converter writes PLY vertices in Unity world space.
+        // ScanNet++ meshes are in ARKit space (right-handed, -Z forward). The pose
+        // converter already applies C = diag(1,1,-1,1); the same flip is needed here
+        // so the mesh lands in the same Unity world space as the camera poses.
+        static readonly Matrix4x4 k_ArkitToUnity = new Matrix4x4(
+            new Vector4( 1, 0,  0, 0),
+            new Vector4( 0, 1,  0, 0),
+            new Vector4( 0, 0, -1, 0),
+            new Vector4( 0, 0,  0, 1));
+
         static ScannedSceneMeshData LoadMeshFromArchive(string archivePath, string entryPath)
         {
             using var archive = new ZipArchive(File.OpenRead(archivePath), ZipArchiveMode.Read);
@@ -196,13 +206,13 @@ namespace SensorFlex.Player.Library
             if (entry == null)
                 throw new InvalidOperationException($"Mesh entry not found: {entryPath}");
             var bytes = ArchiveIOUtils.ReadEntry(entry);
-            return PlyMeshReader.Parse(bytes, Matrix4x4.identity);
+            return PlyMeshReader.Parse(bytes, k_ArkitToUnity);
         }
 
         static ScannedSceneMeshData LoadMeshFromFile(string path)
         {
             var bytes = File.ReadAllBytes(path);
-            return PlyMeshReader.Parse(bytes, Matrix4x4.identity);
+            return PlyMeshReader.Parse(bytes, k_ArkitToUnity);
         }
 
         static Mesh BuildUnityMesh(ScannedSceneMeshData data, string sceneId)
