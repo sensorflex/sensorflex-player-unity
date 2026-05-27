@@ -59,7 +59,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
-using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -83,8 +82,91 @@ namespace SensorFlex.Player.Library
 
         public static ScannedSceneMeshLoadOperation Start(ARSensorFlexSession session)
         {
-            // No current source mode embeds a scanned mesh (SFZ format stores sessions only)
+            if (session == null)
+                return null;
+
+            if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz)
+                return StartFromSfzArchive(session);
+
+            if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo)
+                return StartFromFileIo(session);
+
             return null;
+        }
+
+        static ScannedSceneMeshLoadOperation StartFromSfzArchive(ARSensorFlexSession session)
+        {
+            string archivePath = session.SfzFilePath;
+            if (!Path.IsPathRooted(archivePath))
+                archivePath = Path.Combine(Application.streamingAssetsPath, archivePath);
+
+            if (!File.Exists(archivePath))
+            {
+                Debug.LogError($"[SF] SFZ archive not found: {archivePath}");
+                return null;
+            }
+
+            string meshFile;
+            string sceneId;
+            using (var archive = new ZipArchive(File.OpenRead(archivePath), ZipArchiveMode.Read))
+            {
+                var sessionEntry = archive.GetEntry("session/session.json");
+                if (sessionEntry == null)
+                {
+                    Debug.LogWarning("[SF] session/session.json not found in SFZ archive.");
+                    return null;
+                }
+
+                string json;
+                using (var sr = new StreamReader(sessionEntry.Open()))
+                    json = sr.ReadToEnd();
+
+                var sfzSession = JsonUtility.FromJson<ArchiveIOUtils.SfzSessionJson>(json);
+                meshFile = sfzSession?.attachments?.scene_mesh?.file;
+                if (string.IsNullOrEmpty(meshFile))
+                    return null;
+
+                sceneId = sfzSession.session_id ?? "sfz";
+
+                if (archive.GetEntry($"session/{meshFile}") == null)
+                {
+                    Debug.LogError($"[SF] Scene mesh entry missing: session/{meshFile}");
+                    return null;
+                }
+            }
+
+            var task = Task.Run(() => LoadMeshFromArchive(archivePath, $"session/{meshFile}"));
+            return new ScannedSceneMeshLoadOperation(task, sceneId);
+        }
+
+        static ScannedSceneMeshLoadOperation StartFromFileIo(ARSensorFlexSession session)
+        {
+            string dir = session.FileIoPath;
+            if (!Path.IsPathRooted(dir))
+                dir = Path.Combine(Application.streamingAssetsPath, dir);
+
+            string sessionJsonPath = Path.Combine(dir, "session.json");
+            if (!File.Exists(sessionJsonPath))
+            {
+                Debug.LogWarning($"[SF] session.json not found at {sessionJsonPath}.");
+                return null;
+            }
+
+            var sfzSession = JsonUtility.FromJson<ArchiveIOUtils.SfzSessionJson>(File.ReadAllText(sessionJsonPath));
+            string meshFile = sfzSession?.attachments?.scene_mesh?.file;
+            if (string.IsNullOrEmpty(meshFile))
+                return null;
+
+            string meshPath = Path.Combine(dir, meshFile);
+            if (!File.Exists(meshPath))
+            {
+                Debug.LogError($"[SF] Scene mesh file missing: {meshPath}");
+                return null;
+            }
+
+            string sceneId = sfzSession.session_id ?? "fileio";
+            var task = Task.Run(() => LoadMeshFromFile(meshPath));
+            return new ScannedSceneMeshLoadOperation(task, sceneId);
         }
 
         public bool TryComplete(out Mesh mesh)
@@ -107,27 +189,20 @@ namespace SensorFlex.Player.Library
             return true;
         }
 
-        static ZipArchiveEntry FindSceneMetaEntry(ZipArchive archive)
+        static ScannedSceneMeshData LoadMeshFromArchive(string archivePath, string entryPath)
         {
-            foreach (var entry in archive.Entries)
-            {
-                if (entry.FullName.EndsWith("/meta.json", StringComparison.Ordinal) &&
-                    entry.FullName.Count(c => c == '/') == 1)
-                    return entry;
-            }
-
-            return null;
+            using var archive = new ZipArchive(File.OpenRead(archivePath), ZipArchiveMode.Read);
+            var entry = archive.GetEntry(entryPath);
+            if (entry == null)
+                throw new InvalidOperationException($"Mesh entry not found: {entryPath}");
+            var bytes = ArchiveIOUtils.ReadEntry(entry);
+            return PlyMeshReader.Parse(bytes, Matrix4x4.identity);
         }
 
-        static ScannedSceneMeshData LoadMeshData(string zipPath, string meshEntryPath, Matrix4x4 coordConvMatrix)
+        static ScannedSceneMeshData LoadMeshFromFile(string path)
         {
-            using var archive = new ZipArchive(File.OpenRead(zipPath), ZipArchiveMode.Read);
-            var entry = archive.GetEntry(meshEntryPath);
-            if (entry == null)
-                throw new InvalidOperationException($"Mesh entry not found: {meshEntryPath}");
-
-            var bytes = ArchiveIOUtils.ReadEntry(entry);
-            return PlyMeshReader.Parse(bytes, coordConvMatrix);
+            var bytes = File.ReadAllBytes(path);
+            return PlyMeshReader.Parse(bytes, Matrix4x4.identity);
         }
 
         static Mesh BuildUnityMesh(ScannedSceneMeshData data, string sceneId)

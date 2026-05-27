@@ -17,9 +17,10 @@ session/
 ├── rgb/
 │   ├── 000000.jpg
 │   └── ...
-└── depth/                (present only when depth channel exists)
-    ├── 000000.bin
-    └── ...
+├── depth/                (present only when depth channel exists)
+│   ├── 000000.bin
+│   └── ...
+└── scene_mesh.ply        (present only when attachments.scene_mesh exists)
 ```
 
 **Compression:**
@@ -43,6 +44,9 @@ Single file containing all session metadata and track data arrays.
     "model": "iPhone 13 Pro",
     "os": "iOS 16.0",
     "ar_framework": "ARKit"
+  },
+  "attachments": {
+    "scene_mesh": { "file": "scene_mesh.ply", "format": "ply" }
   },
   "tracks": {
     "frames": {
@@ -174,6 +178,41 @@ Typical rate: ~100 Hz. Present only when `"imu"` key exists in `tracks`.
 | `acceleration` | float32[3] | `Accelerometer.current.value` | Raw acceleration including gravity, m/s² |
 | `rotation_rate` | float32[3] | `Gyroscope.current.value` | Angular velocity, rad/s |
 | `gravity` | float32[3] | `GravitySensor.current.value` | Gravity direction, unit vector |
+
+---
+
+## Attachments
+
+Static assets that accompany the session but are not time-series data. `attachments` is an
+optional top-level object; omit it entirely when no static assets are present.
+
+All file references in `attachments` are relative to `session/`, the same root as track file
+references. Static asset files sit flat in the session root — no subdirectory is used for
+single files.
+
+### attachments.scene_mesh
+
+An offline-reconstructed static mesh of the captured environment.
+
+```json
+"attachments": {
+  "scene_mesh": {
+    "file": "scene_mesh.ply",
+    "format": "ply"
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `file` | string | Path relative to `session/`. Conventionally `scene_mesh.ply`. |
+| `format` | string | Format hint. Currently only `"ply"` is supported. |
+
+**Format:** PLY (ASCII or binary-little-endian). Standard vertex attributes: `x y z` (required);
+`nx ny nz` normals and `red green blue` per-vertex colors (optional).
+
+**Coordinate frame:** Unity world space — the same frame as `tracks.frames` poses.
+No conversion is required when rendering the mesh against replayed camera data.
 
 ---
 

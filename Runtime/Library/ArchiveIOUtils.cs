@@ -129,13 +129,18 @@ namespace SensorFlex.Player.Library
         [Serializable] internal class SfzImuTrackJson { public SfzImuMetadataJson metadata; public SfzImuSampleJson[] data; }
 
         [Serializable] internal class SfzTracksJson   { public SfzFramesTrackJson frames; public SfzImuTrackJson imu; }
+
+        [Serializable] internal class SfzMeshAttachmentJson { public string file; public string format; }
+        [Serializable] internal class SfzAttachmentsJson    { public SfzMeshAttachmentJson scene_mesh; }
+
         [Serializable] internal class SfzSessionJson
         {
-            public string       version;
-            public string       session_id;
-            public string       start_time_utc;
-            public SfzDeviceJson device;
-            public SfzTracksJson tracks;
+            public string            version;
+            public string            session_id;
+            public string            start_time_utc;
+            public SfzDeviceJson     device;
+            public SfzTracksJson     tracks;
+            public SfzAttachmentsJson attachments;
         }
 
         // ── SFZ helpers ───────────────────────────────────────────────────────────
