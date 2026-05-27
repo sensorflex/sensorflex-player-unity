@@ -34,7 +34,7 @@ namespace SensorFlex.Player
 
         public enum FrameSourceMode
         {
-            WebSocket = 1,
+            Live = 1,
             Sfz = 2,
             FileIo = 3
         }

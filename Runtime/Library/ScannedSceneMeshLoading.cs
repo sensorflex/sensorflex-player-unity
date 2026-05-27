@@ -91,7 +91,15 @@ namespace SensorFlex.Player.Library
             if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo)
                 return StartFromFileIo(session);
 
-            return null;
+            return null; // Live mode: mesh arrives via SFAT attachment packet
+        }
+
+        // Used by LiveWebSocketBackend when a scene_mesh_ply SFAT packet is received.
+        public static ScannedSceneMeshLoadOperation StartFromPlyBytes(
+            byte[] plyBytes, Matrix4x4 coordConvMatrix, string sceneId)
+        {
+            var task = Task.Run(() => PlyMeshReader.Parse(plyBytes, coordConvMatrix));
+            return new ScannedSceneMeshLoadOperation(task, sceneId);
         }
 
         static ScannedSceneMeshLoadOperation StartFromSfzArchive(ARSensorFlexSession session)

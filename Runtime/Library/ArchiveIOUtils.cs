@@ -75,23 +75,6 @@ namespace SensorFlex.Player.Library
     /// </summary>
     internal static class ArchiveIOUtils
     {
-        // ── Legacy scene meta.json DTOs (used by WebSocket backend) ─────────────
-
-        [Serializable] internal class CoordSystem   { public string handedness; public string forward; public string up; }
-        [Serializable] internal class MeshMetaJson  { public string path; public string format; public string units; public string coordinate_frame; }
-        [Serializable] internal class SourceMetaJson { public string dataset; public string device; public string capture_framework; }
-        [Serializable] internal class SceneMetaJson
-        {
-            public string format_version;
-            public string scene_id;
-            public int n_frames;
-            public int fps;
-            public CoordSystem coordinate_system;
-            public SourceMetaJson source;
-            public MeshMetaJson scanned_mesh;
-            public MeshMetaJson mesh;
-        }
-
         // ── SFZ session.json DTOs ─────────────────────────────────────────────────
 
         [Serializable] internal class SfzDeviceJson { public string model; public string os; public string ar_framework; }
@@ -296,9 +279,5 @@ namespace SensorFlex.Player.Library
             return m;
         }
 
-        internal static MeshMetaJson GetScannedMeshMeta(SceneMetaJson meta)
-        {
-            return meta?.scanned_mesh ?? meta?.mesh;
-        }
     }
 }

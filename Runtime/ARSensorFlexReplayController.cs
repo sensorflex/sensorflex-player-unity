@@ -38,6 +38,8 @@ namespace SensorFlex.Player
         GUIStyle  m_BtnStyle;
         GUIStyle  m_BtnActiveStyle;
         GUIStyle  m_InfoLabelStyle;
+        GUIStyle  m_LiveStatusStyle;
+        Color     m_LiveStatusColor;
         Texture2D m_BgTex;
         Texture2D m_ProgressBgTex;
         Texture2D m_ProgressFillTex;
@@ -63,6 +65,12 @@ namespace SensorFlex.Player
         // ── Drawing ───────────────────────────────────────────────────────────
         void DrawBar()
         {
+            if (ARSensorFlexSession.ActiveSession?.SourceMode == ARSensorFlexSession.FrameSourceMode.Live)
+            {
+                DrawLiveBar();
+                return;
+            }
+
             float sidePad = Mathf.Max(6f, Screen.width * 0.008f);
             float btnH    = Mathf.Max(k_MinBtnH, Screen.height * 0.052f);
             float innerW  = Screen.width - 2f * sidePad;
@@ -163,6 +171,68 @@ namespace SensorFlex.Player
             }
         }
 
+        void DrawLiveBar()
+        {
+            float sidePad = Mathf.Max(6f, Screen.width * 0.008f);
+            float btnH    = Mathf.Max(k_MinBtnH, Screen.height * 0.052f);
+            float innerW  = Screen.width - 2f * sidePad;
+
+            float barH = k_RowPad + btnH + k_RowPad;
+            float barY = Screen.height - barH;
+            GUI.Box(new Rect(0f, barY, Screen.width, barH), GUIContent.none, m_BgStyle);
+
+            float y = barY + k_RowPad;
+            float x = sidePad;
+
+            // Connection state pill
+            var state = ControlBridge.ConnectionState;
+            string stateLabel;
+            Color  stateColor;
+            switch (state)
+            {
+                case LiveConnectionState.Live:
+                    stateLabel = "● LIVE";
+                    stateColor = new Color(0.1f, 0.9f, 0.3f);
+                    break;
+                case LiveConnectionState.Connecting:
+                    stateLabel = "◌ Connecting...";
+                    stateColor = new Color(1f, 0.85f, 0.1f);
+                    break;
+                default:
+                    stateLabel = "✕ Disconnected";
+                    stateColor = new Color(1f, 0.35f, 0.35f);
+                    break;
+            }
+
+            if (m_LiveStatusStyle == null || m_LiveStatusColor != stateColor)
+            {
+                m_LiveStatusColor = stateColor;
+                int fs = Mathf.Clamp((int)(btnH * 0.42f), 12, 24);
+                m_LiveStatusStyle = new GUIStyle(GUI.skin.label) { fontSize = fs, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft };
+                m_LiveStatusStyle.normal.textColor = stateColor;
+            }
+
+            float statusW = Mathf.Min(220f, innerW * 0.5f);
+            GUI.Label(new Rect(x, y, statusW, btnH), stateLabel, m_LiveStatusStyle);
+            x += statusW + k_BtnPad;
+
+            float btnW = (innerW - statusW - k_BtnPad - k_BtnPad) / 2f;
+
+            // Reconnect — only enabled when disconnected
+            bool prevEnabled = GUI.enabled;
+            GUI.enabled = state == LiveConnectionState.Disconnected;
+            if (GUI.Button(new Rect(x, y, btnW, btnH), "Reconnect", m_BtnStyle))
+                ControlBridge.Restart();
+            GUI.enabled = prevEnabled;
+            x += btnW + k_BtnPad;
+
+            // Depth / Color toggle
+            string viewLbl   = ControlBridge.DepthVisualizationEnabled ? "Color" : "Depth";
+            GUIStyle viewStyle = ControlBridge.DepthVisualizationEnabled ? m_BtnActiveStyle : m_BtnStyle;
+            if (GUI.Button(new Rect(x, y, btnW, btnH), viewLbl, viewStyle))
+                ControlBridge.ToggleDepthVisualization();
+        }
+
         // ── Style management ──────────────────────────────────────────────────
         void EnsureStyles()
         {
@@ -172,6 +242,7 @@ namespace SensorFlex.Player
             DestroyTextures();
             m_CachedW = Screen.width;
             m_CachedH = Screen.height;
+            m_LiveStatusStyle = null; // rebuild at new size
 
             float btnH    = Mathf.Max(k_MinBtnH, Screen.height * 0.052f);
             int   btnFont = Mathf.Clamp((int)(btnH * 0.42f), 12, 24);

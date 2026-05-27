@@ -14,11 +14,14 @@ namespace SensorFlex.Player
     /// <see cref="CurrentFrame"/> and <see cref="TotalFrames"/> reflect the active loader
     /// and can be read by UI components for progress display.
     /// </summary>
+    public enum LiveConnectionState { Disconnected, Connecting, Live }
+
     public static class ControlBridge
     {
         static bool  s_IsPlaying                = true;
         static float s_PlaybackSpeed            = 1f;
         static bool  s_DepthVisualizationEnabled;
+        static LiveConnectionState s_ConnectionState = LiveConnectionState.Disconnected;
 
         /// <summary>Whether the session is currently advancing frames.</summary>
         public static bool IsPlaying
@@ -78,6 +81,18 @@ namespace SensorFlex.Player
             }
         }
 
+        /// <summary>Current WebSocket live-stream connection state.</summary>
+        public static LiveConnectionState ConnectionState
+        {
+            get => s_ConnectionState;
+            private set
+            {
+                if (s_ConnectionState == value) return;
+                s_ConnectionState = value;
+                OnConnectionStateChanged?.Invoke(s_ConnectionState);
+            }
+        }
+
         /// <summary>Whether depth heat-map visualization is active.</summary>
         public static bool DepthVisualizationEnabled
         {
@@ -89,6 +104,9 @@ namespace SensorFlex.Player
                 OnDepthVisualizationChanged?.Invoke(s_DepthVisualizationEnabled);
             }
         }
+
+        /// <summary>Fires on the main thread when <see cref="ConnectionState"/> changes.</summary>
+        public static event Action<LiveConnectionState> OnConnectionStateChanged;
 
         /// <summary>Fires on the main thread when <see cref="IsPlaying"/> changes.</summary>
         public static event Action<bool> OnPlayStateChanged;
@@ -141,12 +159,16 @@ namespace SensorFlex.Player
         /// </summary>
         public static void Restart() => OnRestart?.Invoke();
 
+        /// <summary>Called by the live backend to update connection state on the main thread.</summary>
+        internal static void SetConnectionState(LiveConnectionState state) => ConnectionState = state;
+
         /// <summary>Reset to defaults (playing, 1× speed, RGB view). Does not touch event subscriptions.</summary>
         public static void Clear()
         {
             s_IsPlaying                = true;
             s_PlaybackSpeed            = 1f;
             s_DepthVisualizationEnabled = false;
+            ConnectionState            = LiveConnectionState.Disconnected;
         }
     }
 }

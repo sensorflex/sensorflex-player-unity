@@ -20,7 +20,7 @@ namespace SensorFlexPlayer.Editor
 
             var mode = (ARSensorFlexSession.FrameSourceMode)modeProp.enumValueIndex;
 
-            if (mode == ARSensorFlexSession.FrameSourceMode.WebSocket)
+            if (mode == ARSensorFlexSession.FrameSourceMode.Live)
             {
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("m_WebSocketUrl"));
             }
@@ -52,8 +52,13 @@ namespace SensorFlexPlayer.Editor
             }
 
             EditorGUILayout.Space();
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PreloadFrameCount"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
+            // Ring buffer size applies to all modes; loop only makes sense for replay.
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PreloadFrameCount"),
+                new GUIContent(mode == ARSensorFlexSession.FrameSourceMode.Live
+                    ? "Ring Buffer Size"
+                    : "Preload Frame Count"));
+            if (mode != ARSensorFlexSession.FrameSourceMode.Live)
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("World Alignment", EditorStyles.boldLabel);
