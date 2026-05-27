@@ -24,14 +24,27 @@ namespace SensorFlexPlayer.Editor
             {
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("m_WebSocketUrl"));
             }
-            else if (mode == ARSensorFlexSession.FrameSourceMode.Zip)
+            else if (mode == ARSensorFlexSession.FrameSourceMode.Sfz)
             {
-                var pathProp = serializedObject.FindProperty("m_ZipFilePath");
+                var pathProp = serializedObject.FindProperty("m_SfzFilePath");
                 EditorGUILayout.BeginHorizontal();
-                pathProp.stringValue = EditorGUILayout.TextField("Archive", pathProp.stringValue);
+                pathProp.stringValue = EditorGUILayout.TextField("SFZ Archive", pathProp.stringValue);
                 if (GUILayout.Button("Browse…", GUILayout.Width(70)))
                 {
-                    string picked = EditorUtility.OpenFilePanel("Select ZIP archive", "", "zip");
+                    string picked = EditorUtility.OpenFilePanel("Select SFZ archive", "", "sfz");
+                    if (!string.IsNullOrEmpty(picked))
+                        pathProp.stringValue = picked;
+                }
+                EditorGUILayout.EndHorizontal();
+            }
+            else if (mode == ARSensorFlexSession.FrameSourceMode.FileIo)
+            {
+                var pathProp = serializedObject.FindProperty("m_FileIoPath");
+                EditorGUILayout.BeginHorizontal();
+                pathProp.stringValue = EditorGUILayout.TextField("Session Directory", pathProp.stringValue);
+                if (GUILayout.Button("Browse…", GUILayout.Width(70)))
+                {
+                    string picked = EditorUtility.OpenFolderPanel("Select session directory", "", "");
                     if (!string.IsNullOrEmpty(picked))
                         pathProp.stringValue = picked;
                 }
@@ -45,7 +58,7 @@ namespace SensorFlexPlayer.Editor
             EditorGUILayout.Space();
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PreloadFrameCount"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
-            if (mode != ARSensorFlexSession.FrameSourceMode.Zip)
+            if (mode == ARSensorFlexSession.FrameSourceMode.FileSystem)
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("m_TargetFPS"));
 
             EditorGUILayout.Space();
