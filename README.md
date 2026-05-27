@@ -60,7 +60,8 @@ Select the source on the **AR SensorFlex Session** component (`Frame Source Mode
 | Mode | Description | Setup |
 |---|---|---|
 | **FileSystem** | Loads PNG/JPG sequences from disk at startup | Place images in `Assets/StreamingAssets/<Image Folder>/` |
-| **Zip** | Streams frames from a SensorFlex ZIP archive; also loads the bundled scanned mesh | Set `Zip File Path` to a `.zip` relative to `StreamingAssets/` or an absolute path |
+| **Sfz** | Streams frames from a `.sfz` archive; also loads the bundled scanned mesh | Set `Sfz File Path` to a `.sfz` relative to `StreamingAssets/` or an absolute path |
+| **FileIo** | Same as Sfz but reads from an unzipped session directory | Set `File Io Path` to a directory containing `session.json` |
 | **WebSocket** | Receives frames from a live server over WebSocket | Set `Web Socket Url` (default `ws://localhost:3000`) and run a compatible server |
 
 ### FileSystem quick start
@@ -74,9 +75,11 @@ Assets/
         └── ...
 ```
 
-### ZIP quick start
+### SFZ quick start
 
-Obtain or convert a ScanNet++ scene to the SensorFlex ZIP format (see [`Docs/ZipFormat.md`](Docs/ZipFormat.md)), then set `Zip File Path` to its path. The package reads frames, poses, intrinsics, depth, and the scanned mesh from a single file.
+Obtain or convert a dataset to the SensorFlex Session Format (see [`Docs/SensorFlexFormat.md`](Docs/SensorFlexFormat.md)), then set `Sfz File Path` to the `.sfz` archive path. The package reads frames, poses, intrinsics, depth, and the optional scanned mesh from a single file.
+
+For an unzipped session directory use **FileIo** mode and set `File Io Path` to the folder containing `session.json`.
 
 ### WebSocket quick start
 
@@ -94,7 +97,7 @@ Primary integration component. Attach once to `XROrigin` or any scene object.
 
 | Inspector Section | Key Fields |
 |---|---|
-| Frame Source | Source mode, ZIP path, image folder, WebSocket URL |
+| Frame Source | Source mode, SFZ path, FileIo path, image folder, WebSocket URL |
 | Playback | Preload frame count, loop, target FPS |
 | Depth (Occlusion) | Enable depth, depth folder (FileSystem only) |
 | Session Alignment | Optional position/rotation/scale offset applied to `XROrigin` at startup |
@@ -104,14 +107,14 @@ Primary integration component. Attach once to `XROrigin` or any scene object.
 
 **Menu path:** `XR/SensorFlex/AR SensorFlex Scene Mesh`
 
-Instantiates the scanned mesh from a ZIP archive. Attach to any child object under `XROrigin`.
+Instantiates the scanned mesh from a SFZ archive or FileIo directory when `attachments.scene_mesh` is present in `session.json`. Attach to any child object under `XROrigin`.
 
 | Field | Description |
 |---|---|
 | Material | Optional material override (defaults to `SensorFlex/VertexColor` shader) |
 | Add Mesh Collider | Adds a `MeshCollider` to the instantiated mesh object |
 
-Only active for the **Zip** frame source; does nothing for FileSystem or WebSocket.
+Only active for **Sfz** and **FileIo** frame sources; does nothing for FileSystem or WebSocket.
 
 ---
 
@@ -122,7 +125,7 @@ The package publishes data through two parallel paths:
 **AR Foundation (Path 1)** — consumed via standard managers:
 - Color texture → `ARCameraManager` / `ARCameraBackground`
 - Per-frame intrinsics and projection matrix → `ARCameraManager`
-- Environment depth → `AROcclusionManager` (FileSystem mode only)
+- Environment depth → `AROcclusionManager` (FileSystem, Sfz, and FileIo modes)
 - Session tracking state → `ARSession`
 
 **Bridges (Path 2)** — consumed via package scene components:
@@ -135,7 +138,6 @@ Both bridges (`PoseBridge`, `ScannedSceneMeshBridge`) are public static APIs and
 
 ## Known Limitations
 
-- Environment depth (`AROcclusionManager`) is supported in **FileSystem mode only**. ZIP depth data is loaded internally but not yet surfaced through the occlusion subsystem.
 - `PoseBridge` and `ScannedSceneMeshBridge` are global singletons; they are not isolated per-session.
 - The WebSocket server protocol is custom — a compatible server is required.
 
@@ -144,4 +146,4 @@ Both bridges (`PoseBridge`, `ScannedSceneMeshBridge`) are public static APIs and
 ## Further Reading
 
 - [`Docs/Architecture.md`](Docs/Architecture.md) — internal component map, data flow, threading model
-- [`Docs/ZipFormat.md`](Docs/ZipFormat.md) — ZIP archive schema reference (frames, poses, intrinsics, depth, mesh)
+- [`Docs/SensorFlexFormat.md`](Docs/SensorFlexFormat.md) — SFZ session format reference (tracks, attachments, coordinate system)
