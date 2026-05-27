@@ -59,9 +59,9 @@ namespace SensorFlex.Player.Subsystem
             bool m_LoggedWaitingForSession;
             bool m_LoggedNormalizedDepthScaleWarning;
             float m_CurrentDepthWorldScale = 1f;
-            bool m_IsZipMode;
-            Texture2D m_ZipDepthTexture;
-            int m_LastZipPlayHead = -1;
+            bool m_IsSfzMode;
+            Texture2D m_SfzDepthTexture;
+            int m_LastSfzPlayHead = -1;
 
             // ----------------------------------------------------------------
             // Environment depth mode
@@ -172,8 +172,8 @@ namespace SensorFlex.Player.Subsystem
             {
                 if (m_HasBoundSession)
                 {
-                    if (m_IsZipMode)
-                        EnsureZipLoaderReady();
+                    if (m_IsSfzMode)
+                        EnsureSfzLoaderReady();
                     else
                         RefreshScaledDepthIfNeeded();
                     return;
@@ -201,10 +201,11 @@ namespace SensorFlex.Player.Subsystem
                     return;
                 }
 
-                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Zip)
+                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz ||
+                    session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo)
                 {
-                    m_IsZipMode = true;
-                    Debug.Log("[SF] OcclusionSubsystem: ZIP mode — reading depth from FrameLoader ring buffer.");
+                    m_IsSfzMode = true;
+                    Debug.Log("[SF] OcclusionSubsystem: SFZ mode — reading depth from FrameLoader ring buffer.");
                     return;
                 }
 
@@ -289,17 +290,17 @@ namespace SensorFlex.Player.Subsystem
                     preloadedDepthFrames = null;
                 }
 
-                if (m_ZipDepthTexture != null)
+                if (m_SfzDepthTexture != null)
                 {
-                    UnityEngine.Object.Destroy(m_ZipDepthTexture);
-                    m_ZipDepthTexture = null;
+                    UnityEngine.Object.Destroy(m_SfzDepthTexture);
+                    m_SfzDepthTexture = null;
                 }
 
                 m_CurrentDepthTexture = null;
                 framesReady = false;
                 index = 0;
-                m_IsZipMode = false;
-                m_LastZipPlayHead = -1;
+                m_IsSfzMode = false;
+                m_LastSfzPlayHead = -1;
             }
 
             static Texture2D LoadDepthFrame(string path, float depthWorldScale, ref bool loggedNormalizedDepthScaleWarning)
@@ -411,9 +412,9 @@ namespace SensorFlex.Player.Subsystem
 
             void AdvanceFrame()
             {
-                if (m_IsZipMode)
+                if (m_IsSfzMode)
                 {
-                    UpdateZipDepthTexture();
+                    UpdateSfzDepthTexture();
                     return;
                 }
 
@@ -427,7 +428,7 @@ namespace SensorFlex.Player.Subsystem
                 m_CurrentDepthTexture = preloadedDepthFrames[index];
             }
 
-            void EnsureZipLoaderReady()
+            void EnsureSfzLoaderReady()
             {
                 if (framesReady)
                     return;
@@ -436,15 +437,15 @@ namespace SensorFlex.Player.Subsystem
                 if (loader == null || !loader.IsReady)
                     return;
 
-                m_ZipDepthTexture = new Texture2D(RawDepthWidth, RawDepthHeight, TextureFormat.RFloat, false);
+                m_SfzDepthTexture = new Texture2D(RawDepthWidth, RawDepthHeight, TextureFormat.RFloat, false);
                 framesReady = true;
                 Debug.Log("[SF] OcclusionSubsystem: ZIP depth texture allocated.");
             }
 
-            void UpdateZipDepthTexture()
+            void UpdateSfzDepthTexture()
             {
-                EnsureZipLoaderReady();
-                if (!framesReady || m_ZipDepthTexture == null)
+                EnsureSfzLoaderReady();
+                if (!framesReady || m_SfzDepthTexture == null)
                     return;
 
                 var loader = CameraSubsystem.CameraDataProvider.ActiveLoader;
@@ -452,7 +453,7 @@ namespace SensorFlex.Player.Subsystem
                     return;
 
                 int playHead = loader.PlayHead;
-                if (playHead < 0 || playHead == m_LastZipPlayHead)
+                if (playHead < 0 || playHead == m_LastSfzPlayHead)
                     return;
 
                 int slot = playHead % loader.BufSize;
@@ -466,7 +467,7 @@ namespace SensorFlex.Player.Subsystem
                 if (depthBytes == null)
                 {
                     m_CurrentDepthTexture = null;
-                    m_LastZipPlayHead = playHead;
+                    m_LastSfzPlayHead = playHead;
                     return;
                 }
 
@@ -477,14 +478,14 @@ namespace SensorFlex.Player.Subsystem
                         $"[SF] OcclusionSubsystem: ZIP depth slot {slot} wrong size." +
                         $" expected={expectedBytes} actual={depthBytes.Length}");
                     m_CurrentDepthTexture = null;
-                    m_LastZipPlayHead = playHead;
+                    m_LastSfzPlayHead = playHead;
                     return;
                 }
 
                 // Fast path: little-endian platform, no world scale — blit raw bytes directly.
                 if (BitConverter.IsLittleEndian && Mathf.Approximately(m_CurrentDepthWorldScale, 1f))
                 {
-                    m_ZipDepthTexture.SetPixelData(depthBytes, 0);
+                    m_SfzDepthTexture.SetPixelData(depthBytes, 0);
                 }
                 else
                 {
@@ -508,12 +509,12 @@ namespace SensorFlex.Player.Subsystem
                                 floats[i] *= m_CurrentDepthWorldScale;
                     }
 
-                    m_ZipDepthTexture.SetPixelData(floats, 0);
+                    m_SfzDepthTexture.SetPixelData(floats, 0);
                 }
 
-                m_ZipDepthTexture.Apply(false);
-                m_CurrentDepthTexture = m_ZipDepthTexture;
-                m_LastZipPlayHead = playHead;
+                m_SfzDepthTexture.Apply(false);
+                m_CurrentDepthTexture = m_SfzDepthTexture;
+                m_LastSfzPlayHead = playHead;
             }
         }
     }
