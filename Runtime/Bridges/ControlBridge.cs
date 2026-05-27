@@ -16,8 +16,9 @@ namespace SensorFlex.Player
     /// </summary>
     public static class ControlBridge
     {
-        static bool  s_IsPlaying     = true;
-        static float s_PlaybackSpeed = 1f;
+        static bool  s_IsPlaying                = true;
+        static float s_PlaybackSpeed            = 1f;
+        static bool  s_DepthVisualizationEnabled;
 
         /// <summary>Whether the session is currently advancing frames.</summary>
         public static bool IsPlaying
@@ -77,8 +78,23 @@ namespace SensorFlex.Player
             }
         }
 
+        /// <summary>Whether depth heat-map visualization is active.</summary>
+        public static bool DepthVisualizationEnabled
+        {
+            get => s_DepthVisualizationEnabled;
+            private set
+            {
+                if (s_DepthVisualizationEnabled == value) return;
+                s_DepthVisualizationEnabled = value;
+                OnDepthVisualizationChanged?.Invoke(s_DepthVisualizationEnabled);
+            }
+        }
+
         /// <summary>Fires on the main thread when <see cref="IsPlaying"/> changes.</summary>
         public static event Action<bool> OnPlayStateChanged;
+
+        /// <summary>Fires on the main thread when <see cref="DepthVisualizationEnabled"/> changes.</summary>
+        public static event Action<bool> OnDepthVisualizationChanged;
 
         /// <summary>Fires on the main thread when <see cref="PlaybackSpeed"/> changes.</summary>
         public static event Action<float> OnSpeedChanged;
@@ -107,6 +123,9 @@ namespace SensorFlex.Player
         /// <summary>Set the playback speed multiplier (clamped to [0.05, 8]).</summary>
         public static void SetSpeed(float speed) => PlaybackSpeed = speed;
 
+        /// <summary>Toggle between RGB and depth heat-map visualization.</summary>
+        public static void ToggleDepthVisualization() => DepthVisualizationEnabled = !s_DepthVisualizationEnabled;
+
         /// <summary>
         /// Advance one frame. Only effective when <see cref="IsPlaying"/> is false.
         /// </summary>
@@ -122,11 +141,12 @@ namespace SensorFlex.Player
         /// </summary>
         public static void Restart() => OnRestart?.Invoke();
 
-        /// <summary>Reset to defaults (playing, 1× speed). Does not touch event subscriptions.</summary>
+        /// <summary>Reset to defaults (playing, 1× speed, RGB view). Does not touch event subscriptions.</summary>
         public static void Clear()
         {
-            s_IsPlaying     = true;
-            s_PlaybackSpeed = 1f;
+            s_IsPlaying                = true;
+            s_PlaybackSpeed            = 1f;
+            s_DepthVisualizationEnabled = false;
         }
     }
 }

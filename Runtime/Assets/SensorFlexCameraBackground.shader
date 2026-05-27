@@ -35,6 +35,10 @@ Shader "SensorFlex/CameraBackground"
     Properties
     {
         _MainTex ("Texture", 2D) = "black" {}
+        // 0 = normal RGB, 1 = depth heat-map visualization
+        [IntRange] _DepthVizMode ("Depth Viz Mode", Range(0,1)) = 0
+        // Metric depth range used to normalize the heat-map (metres)
+        _DepthVizMaxMeters ("Depth Viz Max Meters", Float) = 10.0
     }
 
     SubShader
@@ -66,6 +70,10 @@ Shader "SensorFlex/CameraBackground"
 
             // 1 when ARShaderOcclusion is active and depth data is valid, 0 otherwise
             int _IsOcclusionOn;
+
+            // 0 = RGB, 1 = depth heat-map
+            int   _DepthVizMode;
+            float _DepthVizMaxMeters;
 
             struct Attributes
             {
@@ -133,6 +141,19 @@ Shader "SensorFlex/CameraBackground"
                 return minD < 1e9 ? minD : 0.0;
             }
 
+            // Jet heat-map: t=0 (close) → red, t=0.5 → green, t=1 (far) → blue.
+            // Invalid depth (metricDepth == 0) → black.
+            half4 DepthToHeatMap(float metricDepth)
+            {
+                if (metricDepth <= 0.0) return half4(0, 0, 0, 1);
+                float t = saturate(metricDepth / max(_DepthVizMaxMeters, 0.01));
+                // Piecewise jet: r, g, b each peak at a different t.
+                half r = saturate(1.5 - abs(4.0 * t - 1.0));
+                half g = saturate(1.5 - abs(4.0 * t - 2.0));
+                half b = saturate(1.5 - abs(4.0 * t - 3.0));
+                return half4(r, g, b, 1.0);
+            }
+
             Varyings vert(Attributes input)
             {
                 Varyings output;
@@ -144,21 +165,26 @@ Shader "SensorFlex/CameraBackground"
             FragOutput frag(Varyings input)
             {
                 FragOutput output;
-                output.color = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, input.uv);
 
+                float metricDepth = 0.0;
                 if (_IsOcclusionOn != 0)
+                    metricDepth = SampleDepthFilled(input.uv);
+
+                // Color output: heat-map in depth-viz mode, RGB otherwise.
+                if (_DepthVizMode != 0)
                 {
-                    // SampleDepthFilled fills invalid LiDAR pixels (0.0) from neighbours,
-                    // preventing holes at surface edges. If still 0, push to far plane.
-                    float metricDepth = SampleDepthFilled(input.uv);
-                    output.depth = metricDepth > 0.0
-                        ? MetricDepthToBufferDepth(metricDepth)
-                        : FarDepth();
+                    float rawDepth = SAMPLE_TEXTURE2D(_EnvironmentDepth, sampler_EnvironmentDepth, input.uv).r;
+                    output.color = DepthToHeatMap(rawDepth);
                 }
                 else
                 {
-                    output.depth = FarDepth();
+                    output.color = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, input.uv);
                 }
+
+                // Depth buffer: always written from metric depth when occlusion is on.
+                output.depth = (metricDepth > 0.0)
+                    ? MetricDepthToBufferDepth(metricDepth)
+                    : FarDepth();
 
                 return output;
             }

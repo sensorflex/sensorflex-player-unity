@@ -30,7 +30,7 @@ namespace SensorFlex.Player
         const float k_BtnPad    = 4f;   // horizontal gap between buttons
 
         static readonly float[] k_SpeedPresets = { 0.25f, 0.5f, 1f, 2f, 4f };
-        const int k_CtrlCount  = 3;  // ↺  ⏸/▶  ⏭
+        const int k_CtrlCount  = 4;  // Restart  Play/Pause  Step  Color/Depth
         const int k_SpeedCount = 5;
 
         // ── Cached GUI resources ──────────────────────────────────────────────
@@ -141,6 +141,13 @@ namespace SensorFlex.Player
             if (GUI.Button(new Rect(x, y, bw, bh), "Step", m_BtnStyle))
                 ControlBridge.StepForward();
             GUI.enabled = prev;
+            x += bw + k_BtnPad;
+
+            // Depth / Color toggle
+            string viewLbl = ControlBridge.DepthVisualizationEnabled ? "Color" : "Depth";
+            GUIStyle viewStyle = ControlBridge.DepthVisualizationEnabled ? m_BtnActiveStyle : m_BtnStyle;
+            if (GUI.Button(new Rect(x, y, bw, bh), viewLbl, viewStyle))
+                ControlBridge.ToggleDepthVisualization();
         }
 
         void DrawSpeedRow(float x, float y, float bw, float bh)

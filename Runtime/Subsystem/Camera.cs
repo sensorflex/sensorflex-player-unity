@@ -123,6 +123,7 @@ namespace SensorFlex.Player.Subsystem
                         name = "CustomARCameraMaterial",
                         renderQueue = (int)RenderQueue.Background
                     };
+                    m_CameraMaterial.SetInt("_DepthVizMode", ControlBridge.DepthVisualizationEnabled ? 1 : 0);
                     Debug.Log("[CustomAR] Created camera material with shader: " + shader.name);
                 }
                 else
@@ -538,19 +539,26 @@ namespace SensorFlex.Player.Subsystem
 
             void SubscribeControlBridge()
             {
-                ControlBridge.OnStepForward      += HandleStepForward;
-                ControlBridge.OnPlayStateChanged += HandlePlayStateChanged;
-                ControlBridge.OnRestart          += HandleRestart;
+                ControlBridge.OnStepForward              += HandleStepForward;
+                ControlBridge.OnPlayStateChanged         += HandlePlayStateChanged;
+                ControlBridge.OnRestart                  += HandleRestart;
+                ControlBridge.OnDepthVisualizationChanged += HandleDepthVisualizationChanged;
             }
 
             void UnsubscribeControlBridge()
             {
-                ControlBridge.OnStepForward      -= HandleStepForward;
-                ControlBridge.OnPlayStateChanged -= HandlePlayStateChanged;
-                ControlBridge.OnRestart          -= HandleRestart;
+                ControlBridge.OnStepForward              -= HandleStepForward;
+                ControlBridge.OnPlayStateChanged         -= HandlePlayStateChanged;
+                ControlBridge.OnRestart                  -= HandleRestart;
+                ControlBridge.OnDepthVisualizationChanged -= HandleDepthVisualizationChanged;
             }
 
             void HandleStepForward() => m_StepForwardPending = true;
+
+            void HandleDepthVisualizationChanged(bool enabled)
+            {
+                m_CameraMaterial?.SetInt("_DepthVizMode", enabled ? 1 : 0);
+            }
 
             void HandlePlayStateChanged(bool isPlaying)
             {
