@@ -540,12 +540,14 @@ namespace SensorFlex.Player.Subsystem
             {
                 ControlBridge.OnStepForward      += HandleStepForward;
                 ControlBridge.OnPlayStateChanged += HandlePlayStateChanged;
+                ControlBridge.OnRestart          += HandleRestart;
             }
 
             void UnsubscribeControlBridge()
             {
                 ControlBridge.OnStepForward      -= HandleStepForward;
                 ControlBridge.OnPlayStateChanged -= HandlePlayStateChanged;
+                ControlBridge.OnRestart          -= HandleRestart;
             }
 
             void HandleStepForward() => m_StepForwardPending = true;
@@ -555,6 +557,23 @@ namespace SensorFlex.Player.Subsystem
                 // Reset the timer on unpause so there is no burst of catch-up frames.
                 if (isPlaying)
                     nextFrameTime = Time.realtimeSinceStartupAsDouble;
+            }
+
+            async void HandleRestart()
+            {
+                m_StepForwardPending = false;
+
+                if (m_Loader != null)
+                {
+                    var old = m_Loader;
+                    m_Loader    = null;
+                    ActiveLoader = null;
+                    await old.StopAsync();
+                    old.DestroyTextures();
+                }
+
+                // Skip scene mesh reload — BeginFrameWarmup goes straight to frame loading.
+                BeginFrameWarmup();
             }
 
             // Advance playhead by one frame without waiting for the frame timer.

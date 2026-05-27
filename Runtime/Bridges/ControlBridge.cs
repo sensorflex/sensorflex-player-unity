@@ -89,6 +89,12 @@ namespace SensorFlex.Player
         /// </summary>
         public static event Action OnStepForward;
 
+        /// <summary>
+        /// Fires when <see cref="Restart"/> is called.
+        /// The camera subsystem stops the current loader and restarts frame warmup.
+        /// </summary>
+        public static event Action OnRestart;
+
         /// <summary>Resume playback.</summary>
         public static void Play()  => IsPlaying = true;
 
@@ -109,6 +115,12 @@ namespace SensorFlex.Player
             if (s_IsPlaying) return;
             OnStepForward?.Invoke();
         }
+
+        /// <summary>
+        /// Restart playback from frame 0. Stops the current loader and re-warms the buffer.
+        /// The scanned mesh is not reloaded.
+        /// </summary>
+        public static void Restart() => OnRestart?.Invoke();
 
         /// <summary>Reset to defaults (playing, 1× speed). Does not touch event subscriptions.</summary>
         public static void Clear()
