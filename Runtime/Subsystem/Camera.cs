@@ -362,6 +362,10 @@ namespace SensorFlex.Player.Subsystem
 
                     int lag = latest - m_Loader.PlayHead;
 
+                    Debug.Log($"[SF-Buf] ph={m_Loader.PlayHead} latest={latest} lag={lag} " +
+                              $"pending={m_Loader.PendingDecodeCount} " +
+                              $"mode={(lag > k_LiveEdgeMaxLag ? "CATCHUP" : "EDGE")}");
+
                     if (lag > k_LiveEdgeMaxLag)
                     {
                         // Catching up after a pause: advance one frame at a time so

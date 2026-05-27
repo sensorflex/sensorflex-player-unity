@@ -78,6 +78,8 @@ namespace SensorFlex.Player.Library
         int PlayHead { get; set; }
         // Tracks the highest sequence number received; used by live mode to jump to latest.
         int LatestGlobalIndex { get; set; }
+        // Frames received over the network but not yet uploaded to the ring buffer.
+        int PendingDecodeCount { get; set; }
         // Set by the live backend when a PLY attachment arrives; polled by Camera.cs.
         ScannedSceneMeshLoadOperation PendingMeshLoad { get; set; }
         void AllocateRingBuffer();
@@ -117,6 +119,7 @@ namespace SensorFlex.Player.Library
             set => Volatile.Write(ref m_LatestGlobalIndex, value);
         }
 
+        public int PendingDecodeCount { get; set; }
         public ScannedSceneMeshLoadOperation PendingMeshLoad { get; set; }
 
         public FrameLoaderState(int bufSize)
@@ -192,7 +195,8 @@ namespace SensorFlex.Player.Library
             set => m_State.PlayHead = value;
         }
 
-        public int LatestGlobalIndex => m_State.LatestGlobalIndex;
+        public int LatestGlobalIndex      => m_State.LatestGlobalIndex;
+        public int PendingDecodeCount     => m_State.PendingDecodeCount;
         public ScannedSceneMeshLoadOperation PendingMeshLoad => m_State.PendingMeshLoad;
         public void ClearPendingMeshLoad() => m_State.PendingMeshLoad = null;
 
@@ -559,6 +563,8 @@ namespace SensorFlex.Player.Library
 
                 uploaded++;
             }
+
+            m_State.PendingDecodeCount = m_FrameQueue.Count;
         }
 
         public void Dispatch()
