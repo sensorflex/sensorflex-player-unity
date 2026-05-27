@@ -60,6 +60,11 @@ namespace SensorFlex.Player.Subsystem
             long timestampNs = 0;
 
             const bool EnableProgrammaticLoadingOverlay = true;
+            // Lag above this many frames is treated as "catching up after pause" and uses
+            // sequential advance instead of jump-to-latest. Must be > UploadBatchSize (3)
+            // to avoid false triggers from normal per-frame burst uploads.
+            const int k_LiveEdgeMaxLag = 6;
+
             bool showLoadingScreen = true;
             int FramesLoaded = 0;
             int FramesToWait;
@@ -299,15 +304,18 @@ namespace SensorFlex.Player.Subsystem
 
                         m_StartupStage = StartupStage.Playing;
 
-                        // Start from the oldest preloaded frame so the buffer runway is used.
+                        // Start from the latest buffered frame — the preload just ensures
+                        // the ring buffer is warm so there are no stalls at startup.
                         int latest = m_Loader.LatestGlobalIndex;
-                        int startSeqNum = Math.Max(0, latest - FramesToWait + 1);
-                        int startSlot   = startSeqNum % m_Loader.BufSize;
-                        if (m_Loader.SlotReady[startSlot] && m_Loader.SlotGlobalIdx[startSlot] == startSeqNum)
+                        if (latest >= 0)
                         {
-                            m_Loader.PlayHead = startSeqNum;
-                            PlayBufferedSlot(startSlot);
-                            OnFramesReady?.Invoke();
+                            int startSlot = latest % m_Loader.BufSize;
+                            if (m_Loader.SlotReady[startSlot] && m_Loader.SlotGlobalIdx[startSlot] == latest)
+                            {
+                                m_Loader.PlayHead = latest;
+                                PlayBufferedSlot(startSlot);
+                                OnFramesReady?.Invoke();
+                            }
                         }
                         return;
                     }
@@ -352,28 +360,32 @@ namespace SensorFlex.Player.Subsystem
                     int latest = m_Loader.LatestGlobalIndex;
                     if (latest < 0) return;
 
-                    int nextSeqNum = m_Loader.PlayHead + 1;
-                    if (nextSeqNum > latest)
-                        return; // At the live edge — wait for the next incoming frame.
+                    int lag = latest - m_Loader.PlayHead;
 
-                    // Advance sequentially (catch-up after pause, or normal live playback).
-                    int slot = nextSeqNum % m_Loader.BufSize;
-                    if (!m_Loader.SlotReady[slot] || m_Loader.SlotGlobalIdx[slot] != nextSeqNum)
+                    if (lag > k_LiveEdgeMaxLag)
                     {
-                        // Slot was overwritten — paused longer than TotalLiveBufferSize allows.
-                        Debug.LogWarning($"[SF] Live buffer overflow (lag={latest - m_Loader.PlayHead}) — jumping to latest.");
-                        slot = latest % m_Loader.BufSize;
-                        if (m_Loader.SlotReady[slot] && m_Loader.SlotGlobalIdx[slot] == latest)
+                        // Catching up after a pause: advance one frame at a time so
+                        // buffered content is played in order.
+                        int nextSeqNum = m_Loader.PlayHead + 1;
+                        int slot = nextSeqNum % m_Loader.BufSize;
+                        if (m_Loader.SlotReady[slot] && m_Loader.SlotGlobalIdx[slot] == nextSeqNum)
                         {
-                            m_Loader.PlayHead = latest;
+                            m_Loader.PlayHead = nextSeqNum;
                             PlayBufferedSlot(slot);
                             OnFramesReady?.Invoke();
+                            return;
                         }
-                        return;
+                        // Next slot was overwritten — buffer overflow. Fall through to jump-to-latest.
+                        Debug.LogWarning($"[SF] Live buffer overflow (lag={lag}) — jumping to latest.");
                     }
 
-                    m_Loader.PlayHead = nextSeqNum;
-                    PlayBufferedSlot(slot);
+                    // Live edge (or overflow recovery): always show the newest frame.
+                    if (lag == 0) return;
+                    int latestSlot = latest % m_Loader.BufSize;
+                    if (!m_Loader.SlotReady[latestSlot] || m_Loader.SlotGlobalIdx[latestSlot] != latest)
+                        return;
+                    m_Loader.PlayHead = latest;
+                    PlayBufferedSlot(latestSlot);
                     OnFramesReady?.Invoke();
                     return;
                 }
