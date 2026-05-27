@@ -8,8 +8,7 @@ namespace SensorFlex.Player.Subsystem
 {
     /// <summary>
     /// XROcclusionSubsystem provider that serves environment depth from the active
-    /// FrameLoader. Sfz/FileIo modes read float depth bins from the ring buffer.
-    /// WebSocket depth is not yet supported and is silently disabled.
+    /// FrameLoader ring buffer. Supported for Sfz, FileIo, and Live (WebSocket) modes.
     ///</summary>
     public sealed class OcclusionSubsystem : XROcclusionSubsystem
     {
@@ -186,15 +185,16 @@ namespace SensorFlex.Player.Subsystem
                     return;
                 }
 
-                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz ||
-                    session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo)
+                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz  ||
+                    session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo ||
+                    session.SourceMode == ARSensorFlexSession.FrameSourceMode.Live)
                 {
                     m_IsSfzMode = true;
-                    Debug.Log("[SF] OcclusionSubsystem: SFZ mode — reading depth from FrameLoader ring buffer.");
+                    Debug.Log($"[SF] OcclusionSubsystem: {session.SourceMode} mode — reading depth from FrameLoader ring buffer.");
                     return;
                 }
 
-                Debug.LogWarning("[SF] OcclusionSubsystem: WebSocket depth not yet supported — depth disabled.");
+                Debug.LogWarning($"[SF] OcclusionSubsystem: unhandled source mode {session.SourceMode} — depth disabled.");
             }
 
             void ReleaseDepthFrames()
