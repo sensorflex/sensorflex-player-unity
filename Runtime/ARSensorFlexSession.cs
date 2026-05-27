@@ -52,6 +52,9 @@ namespace SensorFlex.Player
         [Min(1)]
         [SerializeField] int m_PreloadFrameCount = 120;
         [SerializeField] bool m_LoopSequence = true;
+        [Tooltip("Live mode only: total ring buffer capacity. Determines max pause duration before the buffer overflows and jumps to latest.")]
+        [Min(1)]
+        [SerializeField] int m_TotalLiveBufferSize = 300;
 
         [Header("Depth (Occlusion)")]
         [Tooltip("Enable the XROcclusionSubsystem to supply environment depth textures.")]
@@ -74,6 +77,7 @@ namespace SensorFlex.Player
         internal string FileIoPath => m_FileIoPath;
         internal int PreloadFrameCount => Mathf.Max(1, m_PreloadFrameCount);
         internal bool LoopSequence => m_LoopSequence;
+        internal int TotalLiveBufferSize => Mathf.Max(PreloadFrameCount, m_TotalLiveBufferSize);
         internal bool DepthEnabled => m_DepthEnabled;
         internal float EffectiveDepthWorldScale
         {

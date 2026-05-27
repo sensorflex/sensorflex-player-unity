@@ -216,10 +216,21 @@ namespace SensorFlex.Player
             GUI.Label(new Rect(x, y, statusW, btnH), stateLabel, m_LiveStatusStyle);
             x += statusW + k_BtnPad;
 
-            float btnW = (innerW - statusW - k_BtnPad - k_BtnPad) / 2f;
+            float btnW = (innerW - statusW - 3 * k_BtnPad) / 3f;
+
+            // Play / Pause
+            bool connected = state == LiveConnectionState.Live;
+            bool prevEnabled = GUI.enabled;
+            GUI.enabled = connected;
+            string playLbl = ControlBridge.IsPlaying ? "Pause" : "Play";
+            GUIStyle playStyle = !ControlBridge.IsPlaying ? m_BtnActiveStyle : m_BtnStyle;
+            if (GUI.Button(new Rect(x, y, btnW, btnH), playLbl, playStyle))
+                ControlBridge.TogglePlay();
+            GUI.enabled = prevEnabled;
+            x += btnW + k_BtnPad;
 
             // Reconnect — only enabled when disconnected
-            bool prevEnabled = GUI.enabled;
+            prevEnabled = GUI.enabled;
             GUI.enabled = state == LiveConnectionState.Disconnected;
             if (GUI.Button(new Rect(x, y, btnW, btnH), "Reconnect", m_BtnStyle))
                 ControlBridge.Restart();

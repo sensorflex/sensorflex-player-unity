@@ -195,19 +195,17 @@ namespace SensorFlex.Player.Subsystem
                     m_Loader.DrainUploadQueue();
                 }
 
-                // Step-forward and pause only apply in replay mode.
-                if (!IsLiveMode)
+                // Step-forward only applies in replay mode.
+                if (!IsLiveMode && m_StartupStage == StartupStage.Playing && m_StepForwardPending)
                 {
-                    if (m_StartupStage == StartupStage.Playing && m_StepForwardPending)
-                    {
-                        m_StepForwardPending = false;
-                        ExecuteBufferedStep();
-                        return;
-                    }
-
-                    if (m_StartupStage == StartupStage.Playing && !ControlBridge.IsPlaying)
-                        return;
+                    m_StepForwardPending = false;
+                    ExecuteBufferedStep();
+                    return;
                 }
+
+                // Pause applies to all modes: freeze PlayHead, keep receiving frames.
+                if (m_StartupStage == StartupStage.Playing && !ControlBridge.IsPlaying)
+                    return;
 
                 double effectiveInterval = IsLiveMode
                     ? frameInterval
@@ -242,7 +240,7 @@ namespace SensorFlex.Player.Subsystem
 
                 maxFramesToLoad = session.PreloadFrameCount;
                 FramesToWait = session.SourceMode == ARSensorFlexSession.FrameSourceMode.Live
-                    ? 1
+                    ? session.PreloadFrameCount
                     : Math.Max(1, maxFramesToLoad / 4);
 
                 ScannedSceneMeshBridge.Clear();
@@ -285,13 +283,13 @@ namespace SensorFlex.Player.Subsystem
 
                     if (IsLiveMode)
                     {
-                        // Live: become ready as soon as the backend delivers the first frame
+                        // Live: wait for PreloadFrameCount frames before starting.
                         if (!m_Loader.IsReady)
                             return;
 
                         if (!m_LoggedPreloadComplete)
                         {
-                            Debug.Log($"[SF] Live stream ready. LatestSeq={m_Loader.LatestGlobalIndex}");
+                            Debug.Log($"[SF] Live preload complete. LatestSeq={m_Loader.LatestGlobalIndex} Preloaded={FramesToWait}");
                             m_LoggedPreloadComplete = true;
                         }
 
@@ -301,16 +299,15 @@ namespace SensorFlex.Player.Subsystem
 
                         m_StartupStage = StartupStage.Playing;
 
+                        // Start from the oldest preloaded frame so the buffer runway is used.
                         int latest = m_Loader.LatestGlobalIndex;
-                        if (latest >= 0)
+                        int startSeqNum = Math.Max(0, latest - FramesToWait + 1);
+                        int startSlot   = startSeqNum % m_Loader.BufSize;
+                        if (m_Loader.SlotReady[startSlot] && m_Loader.SlotGlobalIdx[startSlot] == startSeqNum)
                         {
-                            int slot = latest % m_Loader.BufSize;
-                            if (m_Loader.SlotReady[slot] && m_Loader.SlotGlobalIdx[slot] == latest)
-                            {
-                                m_Loader.PlayHead = latest;
-                                PlayBufferedSlot(slot);
-                                OnFramesReady?.Invoke();
-                            }
+                            m_Loader.PlayHead = startSeqNum;
+                            PlayBufferedSlot(startSlot);
+                            OnFramesReady?.Invoke();
                         }
                         return;
                     }
@@ -352,16 +349,30 @@ namespace SensorFlex.Player.Subsystem
 
                 if (IsLiveMode)
                 {
-                    // Always jump to the newest received frame, dropping stale ones.
                     int latest = m_Loader.LatestGlobalIndex;
-                    if (latest < 0 || latest == m_Loader.PlayHead)
-                        return;
+                    if (latest < 0) return;
 
-                    int slot = latest % m_Loader.BufSize;
-                    if (!m_Loader.SlotReady[slot] || m_Loader.SlotGlobalIdx[slot] != latest)
-                        return;
+                    int nextSeqNum = m_Loader.PlayHead + 1;
+                    if (nextSeqNum > latest)
+                        return; // At the live edge — wait for the next incoming frame.
 
-                    m_Loader.PlayHead = latest;
+                    // Advance sequentially (catch-up after pause, or normal live playback).
+                    int slot = nextSeqNum % m_Loader.BufSize;
+                    if (!m_Loader.SlotReady[slot] || m_Loader.SlotGlobalIdx[slot] != nextSeqNum)
+                    {
+                        // Slot was overwritten — paused longer than TotalLiveBufferSize allows.
+                        Debug.LogWarning($"[SF] Live buffer overflow (lag={latest - m_Loader.PlayHead}) — jumping to latest.");
+                        slot = latest % m_Loader.BufSize;
+                        if (m_Loader.SlotReady[slot] && m_Loader.SlotGlobalIdx[slot] == latest)
+                        {
+                            m_Loader.PlayHead = latest;
+                            PlayBufferedSlot(slot);
+                            OnFramesReady?.Invoke();
+                        }
+                        return;
+                    }
+
+                    m_Loader.PlayHead = nextSeqNum;
                     PlayBufferedSlot(slot);
                     OnFramesReady?.Invoke();
                     return;
@@ -486,12 +497,13 @@ namespace SensorFlex.Player.Subsystem
 
                 if (IsLiveMode)
                 {
+                    int buffered = m_Loader != null ? Math.Max(0, m_Loader.LatestGlobalIndex + 1) : 0;
                     string msg = ControlBridge.ConnectionState switch
                     {
                         LiveConnectionState.Connecting => "Live Mode\nConnecting...",
                         LiveConnectionState.Live when m_Loader?.PendingMeshLoad != null
                             => "Live Mode\nLoading scene mesh...",
-                        LiveConnectionState.Live => "Live Mode\nWaiting for first frame...",
+                        LiveConnectionState.Live => $"Live Mode\nPreloading... ({buffered}/{FramesToWait})",
                         _ => "Live Mode\nDisconnected"
                     };
                     m_LoadingOverlay.Show(msg);

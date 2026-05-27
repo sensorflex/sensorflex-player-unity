@@ -52,13 +52,20 @@ namespace SensorFlexPlayer.Editor
             }
 
             EditorGUILayout.Space();
-            // Ring buffer size applies to all modes; loop only makes sense for replay.
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PreloadFrameCount"),
                 new GUIContent(mode == ARSensorFlexSession.FrameSourceMode.Live
-                    ? "Ring Buffer Size"
+                    ? "Preload Buffer Size"
                     : "Preload Frame Count"));
-            if (mode != ARSensorFlexSession.FrameSourceMode.Live)
+            if (mode == ARSensorFlexSession.FrameSourceMode.Live)
+            {
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_TotalLiveBufferSize"),
+                    new GUIContent("Total Buffer Size",
+                        "Ring buffer capacity while paused. Overflow jumps to latest frame."));
+            }
+            else
+            {
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
+            }
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("World Alignment", EditorStyles.boldLabel);

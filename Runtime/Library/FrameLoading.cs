@@ -206,7 +206,12 @@ namespace SensorFlex.Player.Library
             if (session == null)
                 throw new InvalidOperationException("[SF] FrameLoader.Start() requires an active ARSensorFlexSession.");
 
-            var state = new FrameLoaderState(maxFramesToLoad)
+            // Live mode uses the larger total buffer so pausing doesn't overwrite frames immediately.
+            int bufSize = session.SourceMode == ARSensorFlexSession.FrameSourceMode.Live
+                ? session.TotalLiveBufferSize
+                : maxFramesToLoad;
+
+            var state = new FrameLoaderState(bufSize)
             {
                 IsReady = false,
                 PlayHead = -1,
