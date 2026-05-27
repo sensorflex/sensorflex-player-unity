@@ -82,6 +82,7 @@ namespace SensorFlex.Player.Subsystem
             bool m_LoggedEmptyTextureDescriptors;
             bool m_LoggedNonEmptyTextureDescriptors;
             bool m_LoggedWaitingForSession;
+            bool m_StepForwardPending;
 
             public override Material cameraMaterial
             {
@@ -162,6 +163,9 @@ namespace SensorFlex.Player.Subsystem
                 LatestTextureDimensions = new Vector2Int(1920, 1440);
                 m_StartupStage = StartupStage.WarmingUpFrames;
                 nextFrameTime = Time.realtimeSinceStartupAsDouble;
+
+                ControlBridge.Clear();
+                SubscribeControlBridge();
             }
 
             void UpdateFrameIfNeeded()
@@ -188,10 +192,23 @@ namespace SensorFlex.Player.Subsystem
                     session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo)
                     m_Loader.DrainUploadQueue();
 
+                // Execute a pending step-forward immediately when paused.
+                if (m_StartupStage == StartupStage.Playing && m_StepForwardPending && UsesBufferedPlayback())
+                {
+                    m_StepForwardPending = false;
+                    ExecuteBufferedStep();
+                    return;
+                }
+
+                // Respect pause during active playback; warmup always proceeds.
+                if (m_StartupStage == StartupStage.Playing && !ControlBridge.IsPlaying)
+                    return;
+
+                double effectiveInterval = frameInterval / Math.Max(0.05, ControlBridge.PlaybackSpeed);
                 if (Time.realtimeSinceStartupAsDouble < nextFrameTime)
                     return;
 
-                nextFrameTime = Time.realtimeSinceStartupAsDouble + frameInterval;
+                nextFrameTime = Time.realtimeSinceStartupAsDouble + effectiveInterval;
 
                 if (UsesBufferedPlayback())
                 {
@@ -519,8 +536,49 @@ namespace SensorFlex.Player.Subsystem
                 return true;
             }
 
+            void SubscribeControlBridge()
+            {
+                ControlBridge.OnStepForward      += HandleStepForward;
+                ControlBridge.OnPlayStateChanged += HandlePlayStateChanged;
+            }
+
+            void UnsubscribeControlBridge()
+            {
+                ControlBridge.OnStepForward      -= HandleStepForward;
+                ControlBridge.OnPlayStateChanged -= HandlePlayStateChanged;
+            }
+
+            void HandleStepForward() => m_StepForwardPending = true;
+
+            void HandlePlayStateChanged(bool isPlaying)
+            {
+                // Reset the timer on unpause so there is no burst of catch-up frames.
+                if (isPlaying)
+                    nextFrameTime = Time.realtimeSinceStartupAsDouble;
+            }
+
+            // Advance playhead by one frame without waiting for the frame timer.
+            // Only called when paused, in response to ControlBridge.OnStepForward.
+            void ExecuteBufferedStep()
+            {
+                int next = m_Loader.PlayHead + 1;
+                if (m_Loader.TotalFrames != int.MaxValue && next >= m_Loader.TotalFrames)
+                    return;
+
+                int slot = next % m_Loader.BufSize;
+                if (!m_Loader.SlotReady[slot] || m_Loader.SlotGlobalIdx[slot] != next)
+                    return;
+
+                m_Loader.PlayHead = next;
+                PlayBufferedSlot(slot);
+                OnFramesReady?.Invoke();
+            }
+
             public override async void Stop()
             {
+                UnsubscribeControlBridge();
+                ControlBridge.Clear();
+
                 ActiveLoader = null;
                 m_ScannedSceneMeshLoadOperation = null;
                 session = null;
