@@ -8,12 +8,12 @@ namespace SensorFlex.Player
     ///
     /// Bar layout (top → bottom):
     ///   Row 0 — Info:      [frame counter]  [progress bar ─────────────── ]
-    ///   Row 1 — Transport: [↺] [⏸/▶] [⏭]   [0.25×] [0.5×] [1×] [2×] [4×]
+    ///   Row 1 — Transport: [Restart] [Play/Pause] [Step]  [0.25x] [0.5x] [1x] [2x] [4x]
     ///
     /// When the screen is too narrow to fit all buttons at minimum width, the
     /// transport and speed groups each expand to fill their own row:
-    ///   Row 1 — Transport: [    ↺    ] [   ⏸/▶   ] [    ⏭    ]
-    ///   Row 2 — Speed:     [ 0.25× ] [ 0.5× ] [  1×  ] [  2×  ] [  4×  ]
+    ///   Row 1 — Transport: [  Restart  ] [ Play/Pause ] [   Step   ]
+    ///   Row 2 — Speed:     [ 0.25x ] [ 0.5x ] [  1x  ] [  2x  ] [  4x  ]
     ///
     /// Buttons fill the available width evenly in every layout mode.
     /// </summary>
@@ -125,12 +125,12 @@ namespace SensorFlex.Player
         void DrawTransportRow(float x, float y, float bw, float bh)
         {
             // Restart
-            if (GUI.Button(new Rect(x, y, bw, bh), "↺", m_BtnStyle))   // ↺
+            if (GUI.Button(new Rect(x, y, bw, bh), "Restart", m_BtnStyle))
                 ControlBridge.Restart();
             x += bw + k_BtnPad;
 
             // Play / Pause
-            string playLbl = ControlBridge.IsPlaying ? "⏸" : "▶";  // ⏸ or ▶
+            string playLbl = ControlBridge.IsPlaying ? "Pause" : "Play";
             if (GUI.Button(new Rect(x, y, bw, bh), playLbl, m_BtnStyle))
                 ControlBridge.TogglePlay();
             x += bw + k_BtnPad;
@@ -138,7 +138,7 @@ namespace SensorFlex.Player
             // Step forward (disabled while playing)
             bool prev = GUI.enabled;
             GUI.enabled = !ControlBridge.IsPlaying;
-            if (GUI.Button(new Rect(x, y, bw, bh), "⏭", m_BtnStyle))   // ⏭
+            if (GUI.Button(new Rect(x, y, bw, bh), "Step", m_BtnStyle))
                 ControlBridge.StepForward();
             GUI.enabled = prev;
         }
@@ -148,7 +148,7 @@ namespace SensorFlex.Player
             foreach (float speed in k_SpeedPresets)
             {
                 bool   active = Mathf.Approximately(ControlBridge.PlaybackSpeed, speed);
-                string label  = $"{speed:0.##}×";  // e.g. "0.5×"
+                string label  = $"{speed:0.##}x";  // e.g. "0.5x"
                 if (GUI.Button(new Rect(x, y, bw, bh), label,
                                active ? m_BtnActiveStyle : m_BtnStyle))
                     ControlBridge.SetSpeed(speed);
