@@ -9,7 +9,7 @@ namespace SensorFlex.Player.Subsystem
 {
     /// <summary>
     /// XROcclusionSubsystem provider that serves environment depth from the active
-    /// FrameLoader ring buffer. Supported for Sfz, FileIo, and Live (WebSocket) modes.
+    /// SessionLoader ring buffer. Supported for Sfz, FileIo, and Live (WebSocket) modes.
     ///</summary>
     public sealed class OcclusionSubsystem : XROcclusionSubsystem
     {
@@ -191,7 +191,7 @@ namespace SensorFlex.Player.Subsystem
                     session.SourceMode == ARSensorFlexSession.FrameSourceMode.Live)
                 {
                     m_IsSfzMode = true;
-                    Debug.Log($"[SF] OcclusionSubsystem: {session.SourceMode} mode — reading depth from FrameLoader ring buffer.");
+                    Debug.Log($"[SF] OcclusionSubsystem: {session.SourceMode} mode — reading depth from ring buffer.");
                     return;
                 }
 
@@ -267,7 +267,7 @@ namespace SensorFlex.Player.Subsystem
                 if (framesReady)
                     return;
 
-                var loader = CameraSubsystem.CameraDataProvider.ActiveLoader;
+                var loader = CameraSubsystem.CameraDataProvider.ActiveSession;
                 if (loader == null || !loader.IsReady)
                     return;
 
@@ -282,7 +282,7 @@ namespace SensorFlex.Player.Subsystem
                 if (!framesReady || m_SfzDepthTexture == null)
                     return;
 
-                var loader = CameraSubsystem.CameraDataProvider.ActiveLoader;
+                var loader = CameraSubsystem.CameraDataProvider.ActiveSession;
                 if (loader?.DepthBins == null)
                     return;
 

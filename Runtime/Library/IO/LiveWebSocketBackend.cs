@@ -1,16 +1,20 @@
-// Live WebSocket backend — connects to the server, receives session.json, optional SFAT
-// attachment packets (PLY mesh), then a continuous SFWP binary frame stream.
+// LiveWebSocketBackend — ISessionBackend for live WebSocket streaming.
 //
-// Protocol sequence (all initiated by server after hello):
-//   1. Server sends session.json as a JSON text message (fps, channels, attachments)
-//   2. Server sends zero or more SFAT binary packets (one per attachment entry)
-//   3. Server streams SFWP binary frame packets continuously
+// Three-phase lifecycle:
+//   1. Open()              — stores session, starts async WebSocket connect loop
+//   2. TryGetSessionJson() — returns false until the server sends session.json
+//   3. StartLoading()      — allocates ring buffer, enables frame drain
 //
-// Frames are not forwarded to the ring buffer until all expected SFAT packets arrive.
+// Protocol (server-initiated after hello):
+//   session.json text message  — parsed by SessionLoader via TryGetSessionJson
+//   SFAT binary packets        — attachment bytes stored; served via TryGetAttachmentBytes
+//   SFWP binary frame stream   — frames held until all expected attachments consumed
+//
 // Auto-reconnects up to MaxReconnectAttempts consecutive failures; resets on success.
 
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 using NativeWebSocket;
@@ -18,13 +22,13 @@ using UnityEngine;
 
 namespace SensorFlex.Player.Library
 {
-    internal sealed class LiveWebSocketBackend : IFrameLoaderBackend
+    internal sealed class LiveWebSocketBackend : ISessionBackend
     {
-        const int UploadBatchSize = 3;
-        const uint FrameMagic  = 0x50574653; // little-endian "SFWP"
-        const uint AttachMagic = 0x54414653; // little-endian "SFAT"
-        const int MaxReconnectAttempts = 5;
-        const int ReconnectDelayMs = 2000;
+        const int  UploadBatchSize      = 3;
+        const uint FrameMagic           = 0x50574653; // "SFWP" little-endian
+        const uint AttachMagic          = 0x54414653; // "SFAT" little-endian
+        const int  MaxReconnectAttempts = 5;
+        const int  ReconnectDelayMs     = 2000;
 
         struct PendingFrame
         {
@@ -32,13 +36,6 @@ namespace SensorFlex.Player.Library
             public byte[] Rgb;
             public byte[] Meta;
             public byte[] Depth;
-        }
-
-        struct PendingAttachment
-        {
-            public byte   Type;   // 1 = scene_mesh_ply
-            public string Name;
-            public byte[] Data;
         }
 
         [Serializable]
@@ -50,36 +47,41 @@ namespace SensorFlex.Player.Library
             public bool   wantDepth;
         }
 
-        WebSocket    m_WebSocket;
+        WebSocket           m_WebSocket;
         ARSensorFlexSession m_Session;
         IFrameLoaderState   m_State;
-        int  m_FramesToWait;
-        bool m_Started;
-        bool m_Stopping;
-        bool m_HasSession;
-        bool m_WasConnected;          // true once OnOpen fires for current attempt
-        int  m_ConsecutiveFailures;
-        int  m_ExpectedAttachments;
-        int  m_ReceivedAttachments;
-        string m_SessionId;
+        int                 m_FramesToWait;
 
-        readonly ConcurrentQueue<PendingFrame>      m_FrameQueue  = new();
-        readonly ConcurrentQueue<PendingAttachment> m_AttachQueue = new();
+        bool   m_Started;
+        bool   m_Stopping;
+        bool   m_WasConnected;
+        int    m_ConsecutiveFailures;
 
-        public async void Start(ARSensorFlexSession session, IFrameLoaderState state, int framesToWait)
+        // Phase-2 handshake
+        string m_PendingSessionJson;          // set by HandleJsonMessage; read by TryGetSessionJson
+
+        // Phase-3 attachment gate
+        int  m_ExpectedAttachments;           // set in StartLoading from session data
+        int  m_AttachmentsTaken;              // incremented by TryGetAttachmentBytes
+        readonly Dictionary<string, byte[]> m_AttachmentBytes = new();  // SFAT name → bytes
+
+        readonly ConcurrentQueue<PendingFrame> m_FrameQueue = new();
+
+        // ── ISessionBackend — Phase 1 ─────────────────────────────────────────
+
+        public bool Open(ARSensorFlexSession session)
         {
-            if (m_Started) return;
-            m_Started     = true;
-            m_Session     = session;
-            m_State       = state;
-            m_FramesToWait = framesToWait;
+            if (m_Started) return true;
+            m_Session = session;
+            StartConnectLoop();
+            return true;
+        }
 
-            state.TotalFrames       = int.MaxValue;
-            state.LatestGlobalIndex = -1;
-            state.AllocateRingBuffer();
-
+        async void StartConnectLoop()
+        {
+            m_Started = true;
             ControlBridge.SetConnectionState(LiveConnectionState.Connecting);
-            Debug.Log($"[SF] Live WS connecting to {session.WebSocketUrl}");
+            Debug.Log($"[SF] Live WS connecting to {m_Session.WebSocketUrl}");
 
             bool firstAttempt = true;
             while (!m_Stopping && m_ConsecutiveFailures < MaxReconnectAttempts)
@@ -92,13 +94,9 @@ namespace SensorFlex.Player.Library
                     Debug.Log($"[SF] Live WS reconnect attempt {m_ConsecutiveFailures}/{MaxReconnectAttempts}");
                 }
                 firstAttempt = false;
+                m_WasConnected = false;
 
-                m_WasConnected       = false;
-                m_HasSession         = false;
-                m_ExpectedAttachments = 0;
-                m_ReceivedAttachments = 0;
-
-                m_WebSocket = new WebSocket(session.WebSocketUrl);
+                m_WebSocket = new WebSocket(m_Session.WebSocketUrl);
                 m_WebSocket.OnOpen    += HandleOpen;
                 m_WebSocket.OnError   += e => Debug.LogError("[SF] Live WS error: " + e);
                 m_WebSocket.OnClose   += HandleClose;
@@ -112,169 +110,74 @@ namespace SensorFlex.Player.Library
                         ControlBridge.SetConnectionState(LiveConnectionState.Disconnected);
                 }
 
-                if (m_WasConnected)
-                    m_ConsecutiveFailures = 0; // successful connection; reset counter
-                else
-                    m_ConsecutiveFailures++;
+                m_ConsecutiveFailures = m_WasConnected ? 0 : m_ConsecutiveFailures + 1;
             }
 
             if (!m_Stopping && m_ConsecutiveFailures >= MaxReconnectAttempts)
-                Debug.LogError($"[SF] Live WS: max reconnect attempts ({MaxReconnectAttempts}) reached. Use Reconnect to retry.");
+                Debug.LogError($"[SF] Live WS: max reconnect attempts ({MaxReconnectAttempts}) reached.");
         }
 
-        void HandleOpen()
+        // ── ISessionBackend — Phase 2 ─────────────────────────────────────────
+
+        public bool TryGetSessionJson(out string json)
         {
-            m_WasConnected = true;
-            ControlBridge.SetConnectionState(LiveConnectionState.Live);
-            var hello = new HelloMessage { wantDepth = m_Session != null && m_Session.DepthEnabled };
-            _ = m_WebSocket.SendText(JsonUtility.ToJson(hello));
-            Debug.Log("[SF] Live WS: connected, hello sent.");
+            json = m_PendingSessionJson;
+            return !string.IsNullOrEmpty(json);
         }
 
-        void HandleClose(WebSocketCloseCode code)
+        // ── ISessionBackend — Phase 3 ─────────────────────────────────────────
+
+        public void StartLoading(SfzSessionData data, int bufSize, int framesToWait)
         {
-            Debug.Log($"[SF] Live WS closed: {code}");
-            if (!m_Stopping)
-                ControlBridge.SetConnectionState(LiveConnectionState.Disconnected);
+            m_FramesToWait       = framesToWait;
+            m_ExpectedAttachments = data.Attachments.Count;
+            m_AttachmentsTaken   = 0;
+
+            m_State = new FrameLoaderState(bufSize)
+            {
+                TotalFrames       = int.MaxValue,
+                LatestGlobalIndex = -1,
+            };
+
+            bool hasFrames = data.Tracks.TryGetValue("frames", out var framesTrack);
+            m_State.FrameInterval = hasFrames ? framesTrack.SampleInterval : 1.0 / 30;
+            m_State.CoordConvMatrix               = Matrix4x4.identity;
+            m_State.UseNegativeZForwardOpticalAxis = false;
+            m_State.AllocateRingBuffer();
+
+            Debug.Log($"[SF] Live WS StartLoading. fps={1.0/m_State.FrameInterval:F0} bufSize={bufSize} expectedAttachments={m_ExpectedAttachments}");
         }
 
-        void HandleMessage(byte[] bytes)
+        // ── ISessionBackend — attachment bytes ────────────────────────────────
+
+        public byte[] TryGetAttachmentBytes(string attachmentName)
         {
-            if (bytes == null || bytes.Length == 0) return;
+            if (!m_AttachmentBytes.TryGetValue(attachmentName, out var bytes))
+                return null;
 
-            // JSON text frame
-            if (bytes[0] == (byte)'{' || bytes[0] == (byte)'[')
-            {
-                HandleJsonMessage(Encoding.UTF8.GetString(bytes));
-                return;
-            }
-
-            if (bytes.Length >= 4)
-            {
-                uint magic = BitConverter.ToUInt32(bytes, 0);
-                if (magic == AttachMagic) { HandleAttachmentPacket(bytes); return; }
-                if (magic == FrameMagic)  { HandleFramePacket(bytes);      return; }
-            }
-
-            Debug.LogWarning("[SF] Live WS: unrecognised binary packet.");
+            m_AttachmentBytes.Remove(attachmentName);
+            m_AttachmentsTaken++;
+            return bytes;
         }
 
-        // The first JSON message from the server is the session.json payload.
-        void HandleJsonMessage(string json)
+        // ── ISessionBackend — runtime ─────────────────────────────────────────
+
+        public IFrameLoaderState State => m_State;
+
+        public void Dispatch()
         {
-            if (m_HasSession) return; // only parse once per connection
-
-            if (!SessionLoader.TryParse(json, out var sessionData))
-            {
-                Debug.LogWarning("[SF] Live WS: first JSON message is not a valid session.json.");
-                return;
-            }
-
-            m_SessionId           = sessionData.SessionId;
-            m_ExpectedAttachments = sessionData.Attachments.Count;
-            m_HasSession          = true;
-
-            SessionLoader.ApplyToState(sessionData, m_State);
-
-            Debug.Log($"[SF] Live WS: session received. id={m_SessionId} fps={1.0/m_State.FrameInterval:F0} expectedAttachments={m_ExpectedAttachments}");
-        }
-
-        // SFAT: [4B magic][1B version][1B type][4B nameLen][name...][4B dataLen][data...]
-        void HandleAttachmentPacket(byte[] bytes)
-        {
-            if (bytes.Length < 14)
-            {
-                Debug.LogWarning("[SF] Live WS: SFAT packet too small.");
-                return;
-            }
-
-            byte attachType = bytes[5];
-            int  nameLen    = BitConverter.ToInt32(bytes, 6);
-            int  cursor     = 10;
-
-            if (cursor + nameLen + 4 > bytes.Length)
-            {
-                Debug.LogWarning("[SF] Live WS: SFAT name overflows packet.");
-                return;
-            }
-
-            string name = Encoding.UTF8.GetString(bytes, cursor, nameLen);
-            cursor += nameLen;
-
-            int dataLen = BitConverter.ToInt32(bytes, cursor);
-            cursor += 4;
-
-            if (cursor + dataLen > bytes.Length)
-            {
-                Debug.LogWarning("[SF] Live WS: SFAT data overflows packet.");
-                return;
-            }
-
-            var data = new byte[dataLen];
-            Buffer.BlockCopy(bytes, cursor, data, 0, dataLen);
-
-            m_AttachQueue.Enqueue(new PendingAttachment { Type = attachType, Name = name, Data = data });
-            Debug.Log($"[SF] Live WS: SFAT received. type={attachType} name={name} bytes={dataLen}");
-        }
-
-        // SFWP: [4B magic][1B version=1][1B type=1][4B seqNum][4B rgbLen][4B metaLen][4B depthLen][payloads...]
-        void HandleFramePacket(byte[] bytes)
-        {
-            if (bytes.Length < 22)
-            {
-                Debug.LogWarning("[SF] Live WS: SFWP packet too small.");
-                return;
-            }
-
-            if (bytes[4] != 1 || bytes[5] != 1)
-            {
-                Debug.LogWarning("[SF] Live WS: unexpected SFWP version/type.");
-                return;
-            }
-
-            int seqNum   = BitConverter.ToInt32(bytes, 6);
-            int rgbLen   = BitConverter.ToInt32(bytes, 10);
-            int metaLen  = BitConverter.ToInt32(bytes, 14);
-            int depthLen = BitConverter.ToInt32(bytes, 18);
-
-            if (22 + rgbLen + metaLen + depthLen != bytes.Length)
-            {
-                Debug.LogWarning("[SF] Live WS: SFWP length mismatch.");
-                return;
-            }
-
-            int cursor = 22;
-            var rgb  = new byte[rgbLen];  Buffer.BlockCopy(bytes, cursor, rgb,  0, rgbLen);  cursor += rgbLen;
-            var meta = new byte[metaLen]; Buffer.BlockCopy(bytes, cursor, meta, 0, metaLen); cursor += metaLen;
-            byte[] depth = null;
-            if (depthLen > 0)
-            {
-                depth = new byte[depthLen];
-                Buffer.BlockCopy(bytes, cursor, depth, 0, depthLen);
-            }
-
-            m_FrameQueue.Enqueue(new PendingFrame { SeqNum = seqNum, Rgb = rgb, Meta = meta, Depth = depth });
+#if !UNITY_WEBGL || UNITY_EDITOR
+            m_WebSocket?.DispatchMessageQueue();
+#endif
         }
 
         public void DrainMainThreadWork()
         {
-            // 1. Process SFAT attachment queue (main thread — PLY parse is launched as Task)
-            while (m_AttachQueue.TryDequeue(out var att))
-            {
-                if (att.Type == 1) // scene_mesh_ply
-                {
-                    m_State.PendingMeshLoad = ScannedSceneMeshLoadOperation.StartFromPlyBytes(
-                        att.Data, Matrix4x4.identity, m_SessionId ?? "live");
-                    Debug.Log("[SF] Live WS: PLY mesh parse started.");
-                }
-                m_ReceivedAttachments++;
-            }
+            if (m_State == null) return;
 
-            // 2. Hold frames until session.json + all SFAT packets have been received
-            if (!m_HasSession || m_ReceivedAttachments < m_ExpectedAttachments)
-                return;
+            // Hold frames until all expected attachments have been handed to SessionLoader.
+            if (m_AttachmentsTaken < m_ExpectedAttachments) return;
 
-            // 3. Upload decoded frames into the ring buffer
             int uploaded = 0;
             while (uploaded < UploadBatchSize && m_FrameQueue.TryDequeue(out var pkt))
             {
@@ -289,7 +192,7 @@ namespace SensorFlex.Player.Library
 
                 if (pkt.Meta != null && pkt.Meta.Length > 0)
                 {
-                    string json = Encoding.UTF8.GetString(pkt.Meta);
+                    string json  = Encoding.UTF8.GetString(pkt.Meta);
                     var poseVals = SfzUtils.ExtractFloatsFromField(json, "pose");
                     var intrVals = SfzUtils.ExtractFloatsFromField(json, "intrinsic");
                     if (poseVals != null && poseVals.Length >= 16)
@@ -311,13 +214,6 @@ namespace SensorFlex.Player.Library
             m_State.PendingDecodeCount = m_FrameQueue.Count;
         }
 
-        public void Dispatch()
-        {
-#if !UNITY_WEBGL || UNITY_EDITOR
-            m_WebSocket?.DispatchMessageQueue();
-#endif
-        }
-
         public async Task StopAsync()
         {
             m_Stopping = true;
@@ -331,8 +227,104 @@ namespace SensorFlex.Player.Library
             }
 
             m_Started = false;
-            while (m_FrameQueue.TryDequeue(out _))  { }
-            while (m_AttachQueue.TryDequeue(out _)) { }
+            while (m_FrameQueue.TryDequeue(out _)) { }
+            m_AttachmentBytes.Clear();
+        }
+
+        // ── WebSocket handlers ────────────────────────────────────────────────
+
+        void HandleOpen()
+        {
+            m_WasConnected = true;
+            ControlBridge.SetConnectionState(LiveConnectionState.Live);
+            var hello = new HelloMessage { wantDepth = m_Session != null && m_Session.DepthEnabled };
+            _ = m_WebSocket.SendText(JsonUtility.ToJson(hello));
+            Debug.Log("[SF] Live WS: connected, hello sent.");
+        }
+
+        void HandleClose(WebSocketCloseCode code)
+        {
+            Debug.Log($"[SF] Live WS closed: {code}");
+            if (!m_Stopping)
+                ControlBridge.SetConnectionState(LiveConnectionState.Disconnected);
+        }
+
+        void HandleMessage(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0) return;
+
+            if (bytes[0] == (byte)'{' || bytes[0] == (byte)'[')
+            {
+                HandleJsonMessage(Encoding.UTF8.GetString(bytes));
+                return;
+            }
+
+            if (bytes.Length >= 4)
+            {
+                uint magic = BitConverter.ToUInt32(bytes, 0);
+                if (magic == AttachMagic) { HandleAttachmentPacket(bytes); return; }
+                if (magic == FrameMagic)  { HandleFramePacket(bytes);      return; }
+            }
+
+            Debug.LogWarning("[SF] Live WS: unrecognised binary packet.");
+        }
+
+        void HandleJsonMessage(string json)
+        {
+            if (!string.IsNullOrEmpty(m_PendingSessionJson)) return; // already received
+            m_PendingSessionJson = json;
+            Debug.Log("[SF] Live WS: session.json received.");
+        }
+
+        // SFAT: [4B magic][1B version][1B type][4B nameLen][name...][4B dataLen][data...]
+        void HandleAttachmentPacket(byte[] bytes)
+        {
+            if (bytes.Length < 14) { Debug.LogWarning("[SF] Live WS: SFAT packet too small."); return; }
+
+            int nameLen = BitConverter.ToInt32(bytes, 6);
+            int cursor  = 10;
+
+            if (cursor + nameLen + 4 > bytes.Length) { Debug.LogWarning("[SF] Live WS: SFAT name overflows."); return; }
+
+            string name = Encoding.UTF8.GetString(bytes, cursor, nameLen);
+            cursor += nameLen;
+
+            int dataLen = BitConverter.ToInt32(bytes, cursor);
+            cursor += 4;
+
+            if (cursor + dataLen > bytes.Length) { Debug.LogWarning("[SF] Live WS: SFAT data overflows."); return; }
+
+            var data = new byte[dataLen];
+            Buffer.BlockCopy(bytes, cursor, data, 0, dataLen);
+            m_AttachmentBytes[name] = data;
+
+            Debug.Log($"[SF] Live WS: SFAT received. name={name} bytes={dataLen}");
+        }
+
+        // SFWP: [4B magic][1B version=1][1B type=1][4B seqNum][4B rgbLen][4B metaLen][4B depthLen][payloads...]
+        void HandleFramePacket(byte[] bytes)
+        {
+            if (bytes.Length < 22) { Debug.LogWarning("[SF] Live WS: SFWP packet too small."); return; }
+            if (bytes[4] != 1 || bytes[5] != 1) { Debug.LogWarning("[SF] Live WS: unexpected SFWP version/type."); return; }
+
+            int seqNum   = BitConverter.ToInt32(bytes, 6);
+            int rgbLen   = BitConverter.ToInt32(bytes, 10);
+            int metaLen  = BitConverter.ToInt32(bytes, 14);
+            int depthLen = BitConverter.ToInt32(bytes, 18);
+
+            if (22 + rgbLen + metaLen + depthLen != bytes.Length)
+            {
+                Debug.LogWarning("[SF] Live WS: SFWP length mismatch.");
+                return;
+            }
+
+            int cursor = 22;
+            var rgb  = new byte[rgbLen];  Buffer.BlockCopy(bytes, cursor, rgb,  0, rgbLen);  cursor += rgbLen;
+            var meta = new byte[metaLen]; Buffer.BlockCopy(bytes, cursor, meta, 0, metaLen); cursor += metaLen;
+            byte[] depth = null;
+            if (depthLen > 0) { depth = new byte[depthLen]; Buffer.BlockCopy(bytes, cursor, depth, 0, depthLen); }
+
+            m_FrameQueue.Enqueue(new PendingFrame { SeqNum = seqNum, Rgb = rgb, Meta = meta, Depth = depth });
         }
     }
 }

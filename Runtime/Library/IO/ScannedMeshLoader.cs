@@ -1,64 +1,20 @@
-// ScannedSceneMeshLoading.cs — loads and parses a static 3-D mesh embedded in a SensorFlex ZIP archive.
+// ScannedMeshLoader.cs — background PLY parse operation for session scene-mesh attachments.
 //
-// Entry point: ScannedSceneMeshLoadOperation.Start(session). It reads meta.json from the ZIP,
-// locates the declared scanned_mesh .ply file, then kicks off a background Task to parse it.
-// Each Unity frame the caller polls TryComplete() — when the task finishes the raw
-// ScannedSceneMeshData is uploaded to a Unity Mesh on the main thread.
+// Entry point: ScannedSceneMeshLoadOperation.StartFromPlyBytes(bytes, coordConvMatrix, sceneId).
+// Called by SessionLoader.ProcessAttachments() for all source modes. Kicks off a background
+// Task to parse raw PLY bytes; each Unity frame the caller polls TryComplete() — when done,
+// BuildUnityMesh() uploads the result to a Unity Mesh on the main thread.
 //
-// PlyMeshReader handles the actual PLY decoding. It supports ASCII and binary-little-endian
-// formats, polygon faces of any valence (fan-triangulated), and the standard vertex attributes
-// x/y/z, nx/ny/nz, red/green/blue/alpha. After parsing, ApplyCoordinateConversion() transforms
-// all positions and normals through the archive's coord-system matrix; if the transformation
-// changes handedness, winding order is flipped to keep normals outward-facing.
-//
-// Class relationship diagram:
-//
-//  ┌──────────────────────────────────────────────────────────────────┐
-//  │             ScannedSceneMeshLoadOperation                        │
-//  │  ──────────────────────────────────────────────────────────────  │
-//  │  + Start(session) : ScannedSceneMeshLoadOperation  [static]      │
-//  │      reads ZIP meta.json, resolves .ply path, launches Task      │
-//  │  + TryComplete(out Mesh) : bool                                  │
-//  │      polls Task; on completion calls BuildUnityMesh()            │
-//  │                                                                  │
-//  │  holds ──────────────────────────────────────────────────────►   │
-//  │         Task<ScannedSceneMeshData>   (background PLY parse)      │
-//  └──────────────────────┬───────────────────────────────────────────┘
-//                         │ calls (on background thread)
-//                         ▼
-//  ┌─────────────────────────────────────────────────────────┐
-//  │  «static class»  PlyMeshReader                          │
-//  │  ─────────────────────────────────────────────────────  │
-//  │  + Parse(bytes, coordConvMatrix) : ScannedSceneMeshData │
-//  │      ├─ ParseHeader()  → Header (format, counts, props) │
-//  │      ├─ ParseAscii()           ─┐                       │
-//  │      └─ ParseBinaryLittleEndian()  ─► ScannedSceneMesh  │
-//  │                                    Data + coordinate   │
-//  │  internal types:                                        │
-//  │    Header          (PLY header metadata)                │
-//  │    PlyProperty     (name / type / isList per field)     │
-//  │    PlyFormat enum  (Ascii | BinaryLittleEndian)         │
-//  └──────────────────────────┬──────────────────────────────┘
-//                             │ produces
-//                             ▼
-//  ┌──────────────────────────────────────────┐
-//  │  ScannedSceneMeshData                    │
-//  │  ──────────────────────────────────────  │
-//  │  Vertices  : Vector3[]                   │
-//  │  Normals   : Vector3[]  (nullable)       │
-//  │  Colors    : Color32[]  (nullable)       │
-//  │  Triangles : int[]                       │
-//  └──────────────────────────────────────────┘
-//                             │ consumed by BuildUnityMesh()
-//                             ▼
-//                      Unity Mesh object
-//                  (returned to caller via TryComplete)
+// PlyMeshReader handles PLY decoding: ASCII and binary-little-endian formats, polygon faces of
+// any valence (fan-triangulated), and the standard vertex attributes x/y/z, nx/ny/nz,
+// red/green/blue/alpha. ApplyCoordinateConversion() transforms positions and normals through
+// the supplied coord-system matrix; if the transformation changes handedness, winding order
+// is flipped to keep normals outward-facing.
 
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -80,143 +36,12 @@ namespace SensorFlex.Player.Library
             m_SceneId = sceneId;
         }
 
-        public static ScannedSceneMeshLoadOperation Start(ARSensorFlexSession session)
-        {
-            if (session == null)
-                return null;
-
-            if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz)
-                return StartFromSfzArchive(session);
-
-            if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo)
-                return StartFromFileIo(session);
-
-            return null; // Live mode: mesh arrives via SFAT attachment packet
-        }
-
-        // Used by LiveWebSocketBackend when a scene_mesh_ply SFAT packet is received.
+        // Entry point — called by SessionLoader.ProcessAttachments() for all source modes.
         public static ScannedSceneMeshLoadOperation StartFromPlyBytes(
             byte[] plyBytes, Matrix4x4 coordConvMatrix, string sceneId)
         {
             var task = Task.Run(() => PlyMeshReader.Parse(plyBytes, coordConvMatrix));
             return new ScannedSceneMeshLoadOperation(task, sceneId);
-        }
-
-        static ScannedSceneMeshLoadOperation StartFromSfzArchive(ARSensorFlexSession session)
-        {
-            string archivePath = session.SfzFilePath;
-            if (!Path.IsPathRooted(archivePath))
-                archivePath = Path.Combine(Application.streamingAssetsPath, archivePath);
-
-            if (!File.Exists(archivePath))
-            {
-                Debug.LogError($"[SF] SFZ archive not found: {archivePath}");
-                return null;
-            }
-
-            var provider = new SfzArchiveProvider(archivePath);
-            if (!SessionLoader.TryLoad(provider, out var sessionData))
-                return null;
-
-            var plyBytes = SessionLoader.LoadAttachmentBytes(sessionData, "scene_mesh", provider);
-            if (plyBytes == null)
-                return null;
-
-            var task = Task.Run(() => PlyMeshReader.Parse(plyBytes, k_ArkitToUnity));
-            return new ScannedSceneMeshLoadOperation(task, sessionData.SessionId);
-        }
-
-        static ScannedSceneMeshLoadOperation StartFromFileIo(ARSensorFlexSession session)
-        {
-            string dir = session.FileIoPath;
-            if (!Path.IsPathRooted(dir))
-                dir = Path.Combine(Application.streamingAssetsPath, dir);
-
-            var provider = new FileIoProvider(dir);
-            if (!SessionLoader.TryLoad(provider, out var sessionData))
-                return null;
-
-            var plyBytes = SessionLoader.LoadAttachmentBytes(sessionData, "scene_mesh", provider);
-            if (plyBytes == null)
-                return null;
-
-            var task = Task.Run(() => PlyMeshReader.Parse(plyBytes, k_ArkitToUnity));
-            return new ScannedSceneMeshLoadOperation(task, sessionData.SessionId);
-        }
-
-        // ── ISessionDataProvider implementations ──────────────────────────────
-
-        sealed class SfzArchiveProvider : ISessionDataProvider
-        {
-            readonly string m_ArchivePath;
-
-            public SfzArchiveProvider(string archivePath) { m_ArchivePath = archivePath; }
-
-            public bool TryReadJson(out string json)
-            {
-                json = null;
-                try
-                {
-                    using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
-                    var entry = archive.GetEntry("session/session.json");
-                    if (entry == null) return false;
-                    using var sr = new StreamReader(entry.Open());
-                    json = sr.ReadToEnd();
-                    return true;
-                }
-                catch (Exception e)
-                {
-                    Debug.LogWarning("[SF] SFZ: failed to read session.json: " + e.Message);
-                    return false;
-                }
-            }
-
-            public byte[] ReadFile(string relativePath)
-            {
-                try
-                {
-                    using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
-                    var entry = archive.GetEntry($"session/{relativePath}");
-                    return entry != null ? SfzUtils.ReadEntry(entry) : null;
-                }
-                catch (Exception e)
-                {
-                    Debug.LogWarning($"[SF] SFZ: failed to read {relativePath}: {e.Message}");
-                    return null;
-                }
-            }
-        }
-
-        sealed class FileIoProvider : ISessionDataProvider
-        {
-            readonly string m_Dir;
-
-            public FileIoProvider(string dir) { m_Dir = dir; }
-
-            public bool TryReadJson(out string json)
-            {
-                json = null;
-                string path = Path.Combine(m_Dir, "session.json");
-                if (!File.Exists(path))
-                {
-                    Debug.LogWarning($"[SF] FileIo: session.json not found at {path}");
-                    return false;
-                }
-                try   { json = File.ReadAllText(path); return true; }
-                catch (Exception e)
-                {
-                    Debug.LogWarning("[SF] FileIo: failed to read session.json: " + e.Message);
-                    return false;
-                }
-            }
-
-            public byte[] ReadFile(string relativePath)
-            {
-                string fullPath = Path.Combine(m_Dir, relativePath);
-                if (!File.Exists(fullPath)) return null;
-                try   { return File.ReadAllBytes(fullPath); }
-                catch { return null; }
-            }
         }
 
         public bool TryComplete(out Mesh mesh)
@@ -237,32 +62,6 @@ namespace SensorFlex.Player.Library
 
             mesh = BuildUnityMesh(data, m_SceneId);
             return true;
-        }
-
-        // TODO: remove once the SFZ converter writes PLY vertices in Unity world space.
-        // ScanNet++ meshes are in ARKit space (right-handed, -Z forward). The pose
-        // converter already applies C = diag(1,1,-1,1); the same flip is needed here
-        // so the mesh lands in the same Unity world space as the camera poses.
-        static readonly Matrix4x4 k_ArkitToUnity = new Matrix4x4(
-            new Vector4( 1, 0,  0, 0),
-            new Vector4( 0, 1,  0, 0),
-            new Vector4( 0, 0, -1, 0),
-            new Vector4( 0, 0,  0, 1));
-
-        static ScannedSceneMeshData LoadMeshFromArchive(string archivePath, string entryPath)
-        {
-            using var archive = new ZipArchive(File.OpenRead(archivePath), ZipArchiveMode.Read);
-            var entry = archive.GetEntry(entryPath);
-            if (entry == null)
-                throw new InvalidOperationException($"Mesh entry not found: {entryPath}");
-            var bytes = SfzUtils.ReadEntry(entry);
-            return PlyMeshReader.Parse(bytes, k_ArkitToUnity);
-        }
-
-        static ScannedSceneMeshData LoadMeshFromFile(string path)
-        {
-            var bytes = File.ReadAllBytes(path);
-            return PlyMeshReader.Parse(bytes, k_ArkitToUnity);
         }
 
         static Mesh BuildUnityMesh(ScannedSceneMeshData data, string sceneId)

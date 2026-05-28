@@ -43,14 +43,13 @@ namespace SensorFlex.Player.Subsystem
         {
             enum StartupStage
             {
-                LoadingSceneMesh,
                 WarmingUpFrames,
                 Playing
             }
 
             public static event Action OnFramesReady;
 
-            internal static FrameLoader ActiveLoader { get; private set; }
+            internal static SessionLoader ActiveSession { get; private set; }
             internal static long LatestTimestampNs { get; private set; }
             internal static Vector4 LatestIntrinsics { get; private set; } = new(935.3f, 935.3f, 960f, 720f);
             internal static Vector2Int LatestTextureDimensions { get; private set; } = new(1920, 1440);
@@ -69,11 +68,10 @@ namespace SensorFlex.Player.Subsystem
             int FramesToWait;
             LoadingScreenOverlay m_LoadingOverlay;
             StartupStage m_StartupStage;
-            ScannedSceneMeshLoadOperation m_ScannedSceneMeshLoadOperation;
 
             ARSensorFlexSession session;
             int maxFramesToLoad;
-            FrameLoader m_Loader;
+            SessionLoader m_SessionLoader;
 
             bool IsLiveMode => session?.SourceMode == ARSensorFlexSession.FrameSourceMode.Live;
 
@@ -180,25 +178,11 @@ namespace SensorFlex.Player.Subsystem
                 if (!EnsureSessionInitialized())
                     return;
 
-                if (m_StartupStage == StartupStage.LoadingSceneMesh)
-                {
-                    TryCompleteSceneMeshLoad();
-                    return;
-                }
-
-                if (m_Loader == null)
+                if (m_SessionLoader == null)
                     return;
 
-                if (IsLiveMode)
-                {
-                    m_Loader.DispatchWebSocket();
-                    m_Loader.DrainUploadQueue();
-                    PollPendingMeshLoad();
-                }
-                else
-                {
-                    m_Loader.DrainUploadQueue();
-                }
+                m_SessionLoader.Tick();
+                PollPendingMeshLoad();
 
                 // Step-forward only applies in replay mode.
                 if (!IsLiveMode && m_StartupStage == StartupStage.Playing && m_StepForwardPending)
@@ -253,17 +237,7 @@ namespace SensorFlex.Player.Subsystem
                     : Math.Max(1, maxFramesToLoad / 4);
 
                 ScannedSceneMeshBridge.Clear();
-                m_ScannedSceneMeshLoadOperation = ScannedSceneMeshLoadOperation.Start(session);
-                if (m_ScannedSceneMeshLoadOperation != null)
-                {
-                    m_StartupStage = StartupStage.LoadingSceneMesh;
-                    if (EnableProgrammaticLoadingOverlay)
-                        m_LoadingOverlay.Show("Loading scanned mesh...");
-                }
-                else
-                {
-                    BeginFrameWarmup();
-                }
+                BeginFrameWarmup();
 
                 nextFrameTime = Time.realtimeSinceStartupAsDouble + frameInterval;
                 return true;
@@ -271,16 +245,16 @@ namespace SensorFlex.Player.Subsystem
 
             void PollPendingMeshLoad()
             {
-                var pending = m_Loader?.PendingMeshLoad;
+                var pending = m_SessionLoader?.PendingMeshLoad;
                 if (pending == null) return;
                 if (!pending.TryComplete(out var mesh)) return;
 
                 if (mesh != null)
                 {
                     ScannedSceneMeshBridge.SetMesh(mesh, pending.SceneId);
-                    Debug.Log($"[SF] Live mesh ready: vertices={mesh.vertexCount} triangles={mesh.triangles.Length / 3}");
+                    Debug.Log($"[SF] Mesh ready: vertices={mesh.vertexCount} triangles={mesh.triangles.Length / 3}");
                 }
-                m_Loader.ClearPendingMeshLoad();
+                m_SessionLoader.ClearPendingMeshLoad();
             }
 
             void UpdateBufferedFrame()
@@ -293,12 +267,12 @@ namespace SensorFlex.Player.Subsystem
                     if (IsLiveMode)
                     {
                         // Live: wait for PreloadFrameCount frames before starting.
-                        if (!m_Loader.IsReady)
+                        if (!m_SessionLoader.IsReady)
                             return;
 
                         if (!m_LoggedPreloadComplete)
                         {
-                            Debug.Log($"[SF] Live preload complete. LatestSeq={m_Loader.LatestGlobalIndex} Preloaded={FramesToWait}");
+                            Debug.Log($"[SF] Live preload complete. LatestSeq={m_SessionLoader.LatestGlobalIndex} Preloaded={FramesToWait}");
                             m_LoggedPreloadComplete = true;
                         }
 
@@ -311,13 +285,13 @@ namespace SensorFlex.Player.Subsystem
 
                         // Start from the latest buffered frame — the preload just ensures
                         // the ring buffer is warm so there are no stalls at startup.
-                        int latest = m_Loader.LatestGlobalIndex;
+                        int latest = m_SessionLoader.LatestGlobalIndex;
                         if (latest >= 0)
                         {
-                            int startSlot = latest % m_Loader.BufSize;
-                            if (m_Loader.SlotReady[startSlot] && m_Loader.SlotGlobalIdx[startSlot] == latest)
+                            int startSlot = latest % m_SessionLoader.BufSize;
+                            if (m_SessionLoader.SlotReady[startSlot] && m_SessionLoader.SlotGlobalIdx[startSlot] == latest)
                             {
-                                m_Loader.PlayHead = latest;
+                                m_SessionLoader.PlayHead = latest;
                                 PlayBufferedSlot(startSlot);
                                 OnFramesReady?.Invoke();
                             }
@@ -328,14 +302,14 @@ namespace SensorFlex.Player.Subsystem
                     // Replay warmup: count ticks until FramesToWait frames have been buffered
                     FramesLoaded++;
 
-                    if (FramesLoaded >= FramesToWait && m_Loader.IsReady)
+                    if (FramesLoaded >= FramesToWait && m_SessionLoader.IsReady)
                     {
                         if (!m_LoggedPreloadComplete)
                         {
                             Debug.Log(
                                 $"[SF] Preload complete ({session.SourceMode}). " +
                                 $"FramesLoaded={FramesLoaded} FramesToWait={FramesToWait} " +
-                                $"TotalFrames={m_Loader.TotalFrames} PlayHead={m_Loader.PlayHead}");
+                                $"TotalFrames={m_SessionLoader.TotalFrames} PlayHead={m_SessionLoader.PlayHead}");
                             m_LoggedPreloadComplete = true;
                         }
 
@@ -346,11 +320,11 @@ namespace SensorFlex.Player.Subsystem
                         m_StartupStage = StartupStage.Playing;
 
                         int firstGlobalFrameIndex = 0;
-                        int firstSlot = firstGlobalFrameIndex % m_Loader.BufSize;
-                        if (!m_Loader.SlotReady[firstSlot] || m_Loader.SlotGlobalIdx[firstSlot] != firstGlobalFrameIndex)
+                        int firstSlot = firstGlobalFrameIndex % m_SessionLoader.BufSize;
+                        if (!m_SessionLoader.SlotReady[firstSlot] || m_SessionLoader.SlotGlobalIdx[firstSlot] != firstGlobalFrameIndex)
                             return;
 
-                        m_Loader.PlayHead = firstGlobalFrameIndex;
+                        m_SessionLoader.PlayHead = firstGlobalFrameIndex;
                         PlayBufferedSlot(firstSlot);
                         OnFramesReady?.Invoke();
                     }
@@ -362,10 +336,10 @@ namespace SensorFlex.Player.Subsystem
 
                 if (IsLiveMode)
                 {
-                    int latest = m_Loader.LatestGlobalIndex;
+                    int latest = m_SessionLoader.LatestGlobalIndex;
                     if (latest < 0) return;
 
-                    int lag = latest - m_Loader.PlayHead;
+                    int lag = latest - m_SessionLoader.PlayHead;
                     if (lag == 0) return; // at live edge, waiting for next frame
 
                     if (lag > k_LiveSnapLag)
@@ -373,10 +347,10 @@ namespace SensorFlex.Player.Subsystem
                         // Too far behind (paused too long or display rate << server rate).
                         // Snap to latest and reset the advance clock.
                         Debug.LogWarning($"[SF] Live lag={lag} exceeded snap threshold — jumping to latest.");
-                        int snapSlot = latest % m_Loader.BufSize;
-                        if (m_Loader.SlotReady[snapSlot] && m_Loader.SlotGlobalIdx[snapSlot] == latest)
+                        int snapSlot = latest % m_SessionLoader.BufSize;
+                        if (m_SessionLoader.SlotReady[snapSlot] && m_SessionLoader.SlotGlobalIdx[snapSlot] == latest)
                         {
-                            m_Loader.PlayHead = latest;
+                            m_SessionLoader.PlayHead = latest;
                             m_LiveLastAdvanceTime = Time.realtimeSinceStartupAsDouble;
                             PlayBufferedSlot(snapSlot);
                             OnFramesReady?.Invoke();
@@ -397,11 +371,11 @@ namespace SensorFlex.Player.Subsystem
                     int lastPlayedSlot = -1;
                     for (int i = 0; i < stepsToAdvance; i++)
                     {
-                        int nextSeqNum   = m_Loader.PlayHead + 1;
-                        int liveNextSlot = nextSeqNum % m_Loader.BufSize;
-                        if (!m_Loader.SlotReady[liveNextSlot] || m_Loader.SlotGlobalIdx[liveNextSlot] != nextSeqNum)
+                        int nextSeqNum   = m_SessionLoader.PlayHead + 1;
+                        int liveNextSlot = nextSeqNum % m_SessionLoader.BufSize;
+                        if (!m_SessionLoader.SlotReady[liveNextSlot] || m_SessionLoader.SlotGlobalIdx[liveNextSlot] != nextSeqNum)
                             break; // frame not decoded yet — stop here
-                        m_Loader.PlayHead = nextSeqNum;
+                        m_SessionLoader.PlayHead = nextSeqNum;
                         lastPlayedSlot    = liveNextSlot;
                     }
 
@@ -414,72 +388,51 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 // Replay: advance one frame at a time
-                int nextGlobalFrameIndex = m_Loader.PlayHead + 1;
-                if (m_Loader.TotalFrames != int.MaxValue && nextGlobalFrameIndex >= m_Loader.TotalFrames)
+                int nextGlobalFrameIndex = m_SessionLoader.PlayHead + 1;
+                if (m_SessionLoader.TotalFrames != int.MaxValue && nextGlobalFrameIndex >= m_SessionLoader.TotalFrames)
                 {
-                    if (session.LoopSequence && m_Loader.TotalFrames > 0)
+                    if (session.LoopSequence && m_SessionLoader.TotalFrames > 0)
                         nextGlobalFrameIndex = 0;
                     else
                         return;
                 }
 
-                int nextSlot = nextGlobalFrameIndex % m_Loader.BufSize;
-                if (!m_Loader.SlotReady[nextSlot] || m_Loader.SlotGlobalIdx[nextSlot] != nextGlobalFrameIndex)
+                int nextSlot = nextGlobalFrameIndex % m_SessionLoader.BufSize;
+                if (!m_SessionLoader.SlotReady[nextSlot] || m_SessionLoader.SlotGlobalIdx[nextSlot] != nextGlobalFrameIndex)
                     return;
 
-                m_Loader.PlayHead = nextGlobalFrameIndex;
+                m_SessionLoader.PlayHead = nextGlobalFrameIndex;
                 PlayBufferedSlot(nextSlot);
                 OnFramesReady?.Invoke();
             }
 
             void PlayBufferedSlot(int slot)
             {
-                SetCurrentTexture(m_Loader.Frames[slot]);
+                SetCurrentTexture(m_SessionLoader.Frames[slot]);
 
                 timestampNs += (long)(frameInterval * 1_000_000_000L);
                 LatestTimestampNs = timestampNs;
 
-                if (m_Loader.Intrinsics != null &&
+                if (m_SessionLoader.Intrinsics != null &&
                     slot >= 0 &&
-                    slot < m_Loader.Intrinsics.Length &&
-                    m_Loader.Intrinsics[slot] != Vector4.zero)
+                    slot < m_SessionLoader.Intrinsics.Length &&
+                    m_SessionLoader.Intrinsics[slot] != Vector4.zero)
                 {
-                    m_CurrentIntrinsics = m_Loader.Intrinsics[slot];
+                    m_CurrentIntrinsics = m_SessionLoader.Intrinsics[slot];
                     LatestIntrinsics = m_CurrentIntrinsics;
                 }
 
-                if (m_Loader.Poses != null &&
+                if (m_SessionLoader.Poses != null &&
                     slot >= 0 &&
-                    slot < m_Loader.Poses.Length &&
-                    m_Loader.Poses[slot] != Matrix4x4.zero)
+                    slot < m_SessionLoader.Poses.Length &&
+                    m_SessionLoader.Poses[slot] != Matrix4x4.zero)
                 {
                     PoseBridge.SetUnityPose(
                         SfzUtils.ConvertToUnityPose(
-                            m_Loader.Poses[slot],
-                            m_Loader.CoordConvMatrix,
-                            m_Loader.UseNegativeZForwardOpticalAxis));
+                            m_SessionLoader.Poses[slot],
+                            m_SessionLoader.CoordConvMatrix,
+                            m_SessionLoader.UseNegativeZForwardOpticalAxis));
                 }
-            }
-
-            void TryCompleteSceneMeshLoad()
-            {
-                if (m_ScannedSceneMeshLoadOperation == null)
-                {
-                    BeginFrameWarmup();
-                    return;
-                }
-
-                if (!m_ScannedSceneMeshLoadOperation.TryComplete(out var mesh))
-                    return;
-
-                if (mesh != null)
-                {
-                    ScannedSceneMeshBridge.SetMesh(mesh, m_ScannedSceneMeshLoadOperation.SceneId);
-                    Debug.Log($"[SF] Scanned mesh ready: vertices={mesh.vertexCount} triangles={mesh.triangles.Length / 3}");
-                }
-
-                m_ScannedSceneMeshLoadOperation = null;
-                BeginFrameWarmup();
             }
 
             void BeginFrameWarmup()
@@ -498,11 +451,11 @@ namespace SensorFlex.Player.Subsystem
                     return;
                 }
 
-                m_Loader = new FrameLoader();
-                m_Loader.Start(session, maxFramesToLoad, FramesToWait);
-                ActiveLoader = m_Loader;
+                m_SessionLoader = new SessionLoader();
+                m_SessionLoader.Start(session, maxFramesToLoad, FramesToWait);
+                ActiveSession = m_SessionLoader;
 
-                frameInterval = m_Loader.FrameInterval;
+                frameInterval = m_SessionLoader.FrameInterval;
 
                 Debug.Log($"[SF] Mode={session.SourceMode} FramesToWait={FramesToWait} BufferSize={maxFramesToLoad} FrameInterval={frameInterval:F4}s");
                 if (EnableProgrammaticLoadingOverlay)
@@ -532,11 +485,11 @@ namespace SensorFlex.Player.Subsystem
 
                 if (IsLiveMode)
                 {
-                    int buffered = m_Loader != null ? Math.Max(0, m_Loader.LatestGlobalIndex + 1) : 0;
+                    int buffered = m_SessionLoader != null ? Math.Max(0, m_SessionLoader.LatestGlobalIndex + 1) : 0;
                     string msg = ControlBridge.ConnectionState switch
                     {
                         LiveConnectionState.Connecting => "Live Mode\nConnecting...",
-                        LiveConnectionState.Live when m_Loader?.PendingMeshLoad != null
+                        LiveConnectionState.Live when m_SessionLoader?.PendingMeshLoad != null
                             => "Live Mode\nLoading scene mesh...",
                         LiveConnectionState.Live => $"Live Mode\nPreloading... ({buffered}/{FramesToWait})",
                         _ => "Live Mode\nDisconnected"
@@ -547,13 +500,6 @@ namespace SensorFlex.Player.Subsystem
 
                 string source = session.SourceMode.ToString();
                 int progress = Math.Min(FramesLoaded, FramesToWait);
-
-                if (m_StartupStage == StartupStage.LoadingSceneMesh)
-                {
-                    m_LoadingOverlay.Show($"Loading scanned mesh...\nSource: {source}");
-                    return;
-                }
-
                 m_LoadingOverlay.Show($"Loading SensorFlex frames...\nSource: {source}\nWarmup: {progress}/{FramesToWait}");
             }
 
@@ -561,7 +507,7 @@ namespace SensorFlex.Player.Subsystem
             {
                 if (!m_LoggedFirstTryGetFrame)
                 {
-                    Debug.Log($"[SF] TryGetFrame started. Screen={cameraParams.screenWidth}x{cameraParams.screenHeight} Loading={showLoadingScreen} Ready={m_Loader?.IsReady ?? false}");
+                    Debug.Log($"[SF] TryGetFrame started. Screen={cameraParams.screenWidth}x{cameraParams.screenHeight} Loading={showLoadingScreen} Ready={m_SessionLoader?.IsReady ?? false}");
                     m_LoggedFirstTryGetFrame = true;
                 }
 
@@ -601,7 +547,7 @@ namespace SensorFlex.Player.Subsystem
                 {
                     if (!m_LoggedEmptyTextureDescriptors)
                     {
-                        Debug.Log($"[SF] GetTextureDescriptors returned empty. Loading={showLoadingScreen} Ready={m_Loader?.IsReady ?? false}");
+                        Debug.Log($"[SF] GetTextureDescriptors returned empty. Loading={showLoadingScreen} Ready={m_SessionLoader?.IsReady ?? false}");
                         m_LoggedEmptyTextureDescriptors = true;
                     }
 
@@ -676,16 +622,16 @@ namespace SensorFlex.Player.Subsystem
             {
                 m_StepForwardPending = false;
 
-                if (m_Loader != null)
+                if (m_SessionLoader != null)
                 {
-                    var old = m_Loader;
-                    m_Loader    = null;
-                    ActiveLoader = null;
+                    var old = m_SessionLoader;
+                    m_SessionLoader = null;
+                    ActiveSession   = null;
                     await old.StopAsync();
                     old.DestroyTextures();
                 }
 
-                // Skip scene mesh reload — BeginFrameWarmup goes straight to frame loading.
+                // Scene mesh is reloaded as a session attachment via SessionLoader.
                 BeginFrameWarmup();
             }
 
@@ -693,15 +639,15 @@ namespace SensorFlex.Player.Subsystem
             // Only called when paused, in response to ControlBridge.OnStepForward.
             void ExecuteBufferedStep()
             {
-                int next = m_Loader.PlayHead + 1;
-                if (m_Loader.TotalFrames != int.MaxValue && next >= m_Loader.TotalFrames)
+                int next = m_SessionLoader.PlayHead + 1;
+                if (m_SessionLoader.TotalFrames != int.MaxValue && next >= m_SessionLoader.TotalFrames)
                     return;
 
-                int slot = next % m_Loader.BufSize;
-                if (!m_Loader.SlotReady[slot] || m_Loader.SlotGlobalIdx[slot] != next)
+                int slot = next % m_SessionLoader.BufSize;
+                if (!m_SessionLoader.SlotReady[slot] || m_SessionLoader.SlotGlobalIdx[slot] != next)
                     return;
 
-                m_Loader.PlayHead = next;
+                m_SessionLoader.PlayHead = next;
                 PlayBufferedSlot(slot);
                 OnFramesReady?.Invoke();
             }
@@ -711,15 +657,14 @@ namespace SensorFlex.Player.Subsystem
                 UnsubscribeControlBridge();
                 ControlBridge.Clear();
 
-                ActiveLoader = null;
-                m_ScannedSceneMeshLoadOperation = null;
+                ActiveSession = null;
                 session = null;
 
-                if (m_Loader != null)
+                if (m_SessionLoader != null)
                 {
-                    await m_Loader.StopAsync();
-                    m_Loader.DestroyTextures();
-                    m_Loader = null;
+                    await m_SessionLoader.StopAsync();
+                    m_SessionLoader.DestroyTextures();
+                    m_SessionLoader = null;
                 }
 
                 showLoadingScreen = false;

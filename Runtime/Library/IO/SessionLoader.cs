@@ -1,50 +1,76 @@
-// SessionLoader.cs — backend-agnostic session.json parsing and track/attachment loading.
+// SessionLoader.cs — session lifecycle coordinator and data model.
 //
-// ISessionDataProvider is implemented by the I/O backends (SFZ archive, FileIo directory).
-// SessionLoader drives all loading: it parses session.json, populates SfzSessionData
-// generic track/attachment maps, and provides typed helpers for loading frame records
-// and attachment bytes — the backend only supplies raw bytes for a given path.
+// SessionLoader is an instance object (owned by Camera.cs) that drives the full
+// session lifecycle through a four-state machine:
 //
-// Consumers:
-//   SfzBackendBase      — implements ISessionDataProvider; calls TryLoad + TryLoadFrame
-//   LiveWebSocketBackend — calls TryParse + ApplyToState (no file I/O needed)
-//   ScannedMeshLoader   — creates a provider and calls TryLoad + LoadAttachmentBytes
+//   Idle    — not started
+//   Waiting — backend opened; polling TryGetSessionJson() each Tick()
+//   Loading — session.json parsed; streaming frames + loading attachments
+//   Ready   — enough frames buffered to begin playback
+//
+// ISessionBackend is the three-phase contract for all I/O backends:
+//   1. Open()              — validate / open the data source
+//   2. TryGetSessionJson() — polled until session.json text is available
+//   3. StartLoading()      — backend creates its own ring buffer and begins work
+//
+// Session data model (SfzSessionData) uses generic track and attachment maps so
+// new data types can be added without changing this file.
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace SensorFlex.Player.Library
 {
-    /// <summary>
-    /// Abstracts the I/O source for a session so SessionLoader can drive loading
-    /// without knowing whether data comes from a ZIP archive or a directory.
-    /// </summary>
-    internal interface ISessionDataProvider
+    // ── Session load state ────────────────────────────────────────────────────
+
+    internal enum SessionLoadState { Idle, Waiting, Loading, Ready }
+
+    // ── Backend contract ──────────────────────────────────────────────────────
+
+    internal interface ISessionBackend
     {
-        /// <summary>Returns the raw session.json text, or false on failure.</summary>
-        bool TryReadJson(out string json);
+        /// <summary>Open / validate the data source. Returns false on hard failure.</summary>
+        bool Open(ARSensorFlexSession session);
 
         /// <summary>
-        /// Returns the bytes for a path relative to the session root (e.g. "rgb/000000.jpg"),
-        /// or null if the file is missing or unreadable.
+        /// Returns session.json text when available; false if still waiting.
+        /// Called each Tick() until it returns true. File backends return true
+        /// immediately; the live backend returns false until the server sends JSON.
         /// </summary>
-        byte[] ReadFile(string relativePath);
+        bool TryGetSessionJson(out string json);
+
+        /// <summary>Allocate ring buffer and start streaming. Called once after parse.</summary>
+        void StartLoading(SfzSessionData data, int bufSize, int framesToWait);
+
+        /// <summary>
+        /// Returns the raw bytes for a named attachment when available, null otherwise.
+        /// Calling this consumes the bytes (subsequent calls return null for the same name).
+        /// File backends return bytes immediately on first call; the live backend returns
+        /// null until the SFAT packet for that attachment has been received.
+        /// </summary>
+        byte[] TryGetAttachmentBytes(string attachmentName);
+
+        /// <summary>Ring-buffer state; non-null after StartLoading.</summary>
+        IFrameLoaderState State { get; }
+
+        void DrainMainThreadWork();
+        void Dispatch();
+        Task StopAsync();
     }
+
+    // ── Session data model ────────────────────────────────────────────────────
 
     /// <summary>Generic metadata for one session track (frames, imu, …).</summary>
     internal sealed class SfzTrackInfo
     {
         public string Name           { get; }
-        public double SampleInterval { get; }   // seconds between samples (1/fps, 1/rate_hz, …)
+        public double SampleInterval { get; }   // seconds between samples
         public int    RecordCount    { get; }   // 0 when unknown (live / no pre-parsed array)
 
         internal SfzTrackInfo(string name, double sampleInterval, int recordCount)
-        {
-            Name           = name;
-            SampleInterval = sampleInterval;
-            RecordCount    = recordCount;
-        }
+        { Name = name; SampleInterval = sampleInterval; RecordCount = recordCount; }
     }
 
     /// <summary>Generic metadata for one session attachment (scene_mesh, …).</summary>
@@ -55,11 +81,7 @@ namespace SensorFlex.Player.Library
         public string Format { get; }   // e.g. "ply", or null if unspecified
 
         internal SfzAttachmentInfo(string name, string file, string format)
-        {
-            Name   = name;
-            File   = file;
-            Format = format;
-        }
+        { Name = name; File = file; Format = format; }
     }
 
     internal sealed class SfzSessionData
@@ -72,7 +94,7 @@ namespace SensorFlex.Player.Library
         /// <summary>All attachments keyed by name (e.g. "scene_mesh").</summary>
         public IReadOnlyDictionary<string, SfzAttachmentInfo> Attachments { get; }
 
-        // Cached frame record array for TryLoadFrame — only accessed by SessionLoader.
+        // Raw frame record array for backends that iterate frame-by-frame (SFZ/FileIo).
         internal SfzUtils.SfzFrameRecordJson[] FrameRecords { get; }
 
         internal SfzSessionData(
@@ -81,39 +103,160 @@ namespace SensorFlex.Player.Library
             IReadOnlyDictionary<string, SfzAttachmentInfo> attachments,
             SfzUtils.SfzFrameRecordJson[]                  frameRecords)
         {
-            SessionId   = sessionId ?? "session";
-            Tracks      = tracks      ?? new Dictionary<string, SfzTrackInfo>();
-            Attachments = attachments ?? new Dictionary<string, SfzAttachmentInfo>();
+            SessionId    = sessionId ?? "session";
+            Tracks       = tracks      ?? new Dictionary<string, SfzTrackInfo>();
+            Attachments  = attachments ?? new Dictionary<string, SfzAttachmentInfo>();
             FrameRecords = frameRecords;
         }
     }
 
-    internal static class SessionLoader
-    {
-        /// <summary>
-        /// Reads and parses session.json through <paramref name="provider"/>.
-        /// Returns false if the provider fails or the JSON is not a valid session.json.
-        /// </summary>
-        public static bool TryLoad(ISessionDataProvider provider, out SfzSessionData data)
-        {
-            data = null;
-            if (!provider.TryReadJson(out var json))
-                return false;
+    // ── SessionLoader ─────────────────────────────────────────────────────────
 
-            if (!TryParse(json, out data))
+    internal sealed class SessionLoader
+    {
+        SessionLoadState     m_LoadState = SessionLoadState.Idle;
+        ISessionBackend      m_Backend;
+        SfzSessionData       m_SessionData;
+        int                  m_BufSize;
+        int                  m_FramesToWait;
+        readonly HashSet<string> m_StartedAttachments = new();
+
+        // ── Public state ──────────────────────────────────────────────────────
+
+        public SessionLoadState LoadState   => m_LoadState;
+        public bool             IsReady     => m_LoadState == SessionLoadState.Ready;
+        public SfzSessionData   SessionData => m_SessionData;
+
+        /// <summary>In-progress PLY mesh parse; polled and cleared by Camera.cs.</summary>
+        public ScannedSceneMeshLoadOperation PendingMeshLoad { get; private set; }
+        public void ClearPendingMeshLoad() => PendingMeshLoad = null;
+
+        // ── Frame data — delegated to backend state ───────────────────────────
+
+        public double    FrameInterval                  => m_Backend?.State?.FrameInterval ?? 1.0 / 30;
+        public Matrix4x4 CoordConvMatrix                => m_Backend?.State?.CoordConvMatrix ?? Matrix4x4.identity;
+        public bool      UseNegativeZForwardOpticalAxis => m_Backend?.State?.UseNegativeZForwardOpticalAxis ?? false;
+        public int       TotalFrames                    => m_Backend?.State?.TotalFrames ?? 0;
+        public int       BufSize                        => m_Backend?.State?.BufSize ?? 0;
+        public Texture2D[]  Frames        => m_Backend?.State?.Frames;
+        public byte[][]     DepthBins     => m_Backend?.State?.DepthBins;
+        public Matrix4x4[]  Poses         => m_Backend?.State?.Poses;
+        public Vector4[]    Intrinsics    => m_Backend?.State?.Intrinsics;
+        public bool[]       SlotReady     => m_Backend?.State?.SlotReady;
+        public int[]        SlotGlobalIdx => m_Backend?.State?.SlotGlobalIdx;
+        public int          LatestGlobalIndex  => m_Backend?.State?.LatestGlobalIndex ?? -1;
+        public int          PendingDecodeCount => m_Backend?.State?.PendingDecodeCount ?? 0;
+
+        public int PlayHead
+        {
+            get => m_Backend?.State?.PlayHead ?? -1;
+            set { if (m_Backend?.State != null) m_Backend.State.PlayHead = value; }
+        }
+
+        // ── Lifecycle ─────────────────────────────────────────────────────────
+
+        public void Start(ARSensorFlexSession session, int maxFramesToLoad, int framesToWait)
+        {
+            if (session == null)
+                throw new InvalidOperationException("[SF] SessionLoader.Start() requires an active ARSensorFlexSession.");
+
+            m_FramesToWait = framesToWait;
+            m_BufSize = session.SourceMode == ARSensorFlexSession.FrameSourceMode.Live
+                ? session.TotalLiveBufferSize
+                : maxFramesToLoad;
+
+            m_StartedAttachments.Clear();
+            m_Backend = CreateBackend(session.SourceMode);
+
+            if (!m_Backend.Open(session))
             {
-                Debug.LogError("[SF] SessionLoader: failed to parse session.json.");
-                return false;
+                Debug.LogError("[SF] SessionLoader: backend failed to open.");
+                return;
             }
 
-            return true;
+            m_LoadState = SessionLoadState.Waiting;
+            Debug.Log($"[SF] SessionLoader: waiting for session data. mode={session.SourceMode}");
         }
 
         /// <summary>
-        /// Parses a session.json string into an <see cref="SfzSessionData"/>.
-        /// Returns false if the string is not a valid session.json (missing version field).
+        /// Drive the state machine. Call once per Unity frame from Camera.cs —
+        /// replaces the old DrainUploadQueue() + DispatchWebSocket() pair.
         /// </summary>
-        public static bool TryParse(string json, out SfzSessionData data)
+        public void Tick()
+        {
+            m_Backend?.Dispatch();
+
+            switch (m_LoadState)
+            {
+                case SessionLoadState.Waiting:
+                    if (m_Backend.TryGetSessionJson(out var json) && TryParseSession(json, out m_SessionData))
+                    {
+                        m_Backend.StartLoading(m_SessionData, m_BufSize, m_FramesToWait);
+                        m_LoadState = SessionLoadState.Loading;
+                        Debug.Log($"[SF] SessionLoader: session loaded. id={m_SessionData.SessionId} " +
+                                  $"tracks={m_SessionData.Tracks.Count} attachments={m_SessionData.Attachments.Count}");
+                    }
+                    break;
+
+                case SessionLoadState.Loading:
+                case SessionLoadState.Ready:
+                    m_Backend.DrainMainThreadWork();
+                    ProcessAttachments();
+
+                    if (m_LoadState == SessionLoadState.Loading && m_Backend.State?.IsReady == true)
+                    {
+                        m_LoadState = SessionLoadState.Ready;
+                        Debug.Log("[SF] SessionLoader: ready.");
+                    }
+                    break;
+            }
+        }
+
+        public async Task StopAsync()
+        {
+            m_LoadState = SessionLoadState.Idle;
+            if (m_Backend != null)
+                await m_Backend.StopAsync();
+        }
+
+        public void DestroyTextures() => m_Backend?.State?.DestroyTextures();
+
+        // ── Attachment orchestration ──────────────────────────────────────────
+
+        // ScanNet++ PLY meshes are in ARKit space (right-handed, -Z forward).
+        // Flip Z so positions land in the same Unity world space as the camera poses.
+        // TODO: remove once the SFZ exporter writes PLY vertices in Unity world space.
+        static readonly Matrix4x4 k_ArkitToUnity = new Matrix4x4(
+            new Vector4( 1, 0,  0, 0),
+            new Vector4( 0, 1,  0, 0),
+            new Vector4( 0, 0, -1, 0),
+            new Vector4( 0, 0,  0, 1));
+
+        void ProcessAttachments()
+        {
+            if (m_SessionData == null) return;
+
+            foreach (var (name, _) in m_SessionData.Attachments)
+            {
+                if (m_StartedAttachments.Contains(name)) continue;
+
+                var bytes = m_Backend.TryGetAttachmentBytes(name);
+                if (bytes == null) continue;
+
+                if (name == "scene_mesh")
+                {
+                    PendingMeshLoad = ScannedSceneMeshLoadOperation.StartFromPlyBytes(
+                        bytes, k_ArkitToUnity, m_SessionData.SessionId);
+                    Debug.Log("[SF] SessionLoader: scene_mesh loading started.");
+                }
+
+                m_StartedAttachments.Add(name);
+            }
+        }
+
+        // ── Helpers ───────────────────────────────────────────────────────────
+
+        static bool TryParseSession(string json, out SfzSessionData data)
         {
             data = null;
             if (string.IsNullOrEmpty(json))
@@ -153,61 +296,12 @@ namespace SensorFlex.Player.Library
             return true;
         }
 
-        /// <summary>
-        /// Writes <see cref="SfzSessionData"/> fields into an <see cref="IFrameLoaderState"/>.
-        /// Does not call AllocateRingBuffer — the caller is responsible for that.
-        /// </summary>
-        public static void ApplyToState(SfzSessionData data, IFrameLoaderState state)
+        static ISessionBackend CreateBackend(ARSensorFlexSession.FrameSourceMode mode) => mode switch
         {
-            bool hasFrames = data.Tracks.TryGetValue("frames", out var framesTrack);
-            state.TotalFrames   = hasFrames && framesTrack.RecordCount > 0
-                ? framesTrack.RecordCount
-                : int.MaxValue;
-            state.FrameInterval = hasFrames ? framesTrack.SampleInterval : 1.0 / 30;
-            state.CoordConvMatrix                = Matrix4x4.identity;
-            state.UseNegativeZForwardOpticalAxis = false;
-        }
-
-        /// <summary>
-        /// Loads the rgb and depth bytes for a single frame record via <paramref name="provider"/>.
-        /// Returns false if the record has no rgb file or the read fails.
-        /// <paramref name="depth"/> is null when the record has no depth channel.
-        /// </summary>
-        public static bool TryLoadFrame(
-            SfzSessionData data, int recordIndex, ISessionDataProvider provider,
-            out byte[] rgb, out byte[] depth)
-        {
-            rgb = depth = null;
-            var record = data.FrameRecords[recordIndex];
-
-            if (string.IsNullOrEmpty(record.rgb?.file))
-                return false;
-
-            rgb = provider.ReadFile(record.rgb.file);
-            if (rgb == null)
-                return false;
-
-            depth = !string.IsNullOrEmpty(record.depth?.file)
-                ? provider.ReadFile(record.depth.file)
-                : null;
-
-            return true;
-        }
-
-        /// <summary>
-        /// Reads the bytes for a named attachment via <paramref name="provider"/>.
-        /// Returns null if the attachment is not present in the session or the read fails.
-        /// </summary>
-        public static byte[] LoadAttachmentBytes(
-            SfzSessionData data, string attachmentName, ISessionDataProvider provider)
-        {
-            if (!data.Attachments.TryGetValue(attachmentName, out var att))
-                return null;
-
-            if (string.IsNullOrEmpty(att.File))
-                return null;
-
-            return provider.ReadFile(att.File);
-        }
+            ARSensorFlexSession.FrameSourceMode.Sfz    => new SfzFrameLoaderBackend(),
+            ARSensorFlexSession.FrameSourceMode.FileIo => new FileIoFrameLoaderBackend(),
+            ARSensorFlexSession.FrameSourceMode.Live   => new LiveWebSocketBackend(),
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
+        };
     }
 }
