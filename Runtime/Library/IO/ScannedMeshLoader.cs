@@ -118,7 +118,7 @@ namespace SensorFlex.Player.Library
             if (!SessionLoader.TryLoad(provider, out var sessionData))
                 return null;
 
-            var plyBytes = SessionLoader.LoadSceneMeshBytes(sessionData, provider);
+            var plyBytes = SessionLoader.LoadAttachmentBytes(sessionData, "scene_mesh", provider);
             if (plyBytes == null)
                 return null;
 
@@ -136,7 +136,7 @@ namespace SensorFlex.Player.Library
             if (!SessionLoader.TryLoad(provider, out var sessionData))
                 return null;
 
-            var plyBytes = SessionLoader.LoadSceneMeshBytes(sessionData, provider);
+            var plyBytes = SessionLoader.LoadAttachmentBytes(sessionData, "scene_mesh", provider);
             if (plyBytes == null)
                 return null;
 

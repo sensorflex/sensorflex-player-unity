@@ -171,7 +171,7 @@ namespace SensorFlex.Player.Library
             }
 
             m_SessionId           = sessionData.SessionId;
-            m_ExpectedAttachments = sessionData.SceneMeshFile != null ? 1 : 0;
+            m_ExpectedAttachments = sessionData.Attachments.Count;
             m_HasSession          = true;
 
             SessionLoader.ApplyToState(sessionData, m_State);

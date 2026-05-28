@@ -1,15 +1,17 @@
 // SessionLoader.cs — backend-agnostic session.json parsing and track/attachment loading.
 //
 // ISessionDataProvider is implemented by the I/O backends (SFZ archive, FileIo directory).
-// SessionLoader drives all loading: it parses session.json, iterates frame records, and
-// reads attachment bytes — the backend only supplies raw bytes for a given path.
+// SessionLoader drives all loading: it parses session.json, populates SfzSessionData
+// generic track/attachment maps, and provides typed helpers for loading frame records
+// and attachment bytes — the backend only supplies raw bytes for a given path.
 //
 // Consumers:
 //   SfzBackendBase      — implements ISessionDataProvider; calls TryLoad + TryLoadFrame
 //   LiveWebSocketBackend — calls TryParse + ApplyToState (no file I/O needed)
-//   ScannedMeshLoader   — creates a provider and calls TryLoad + LoadSceneMeshBytes
+//   ScannedMeshLoader   — creates a provider and calls TryLoad + LoadAttachmentBytes
 
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace SensorFlex.Player.Library
@@ -30,25 +32,59 @@ namespace SensorFlex.Player.Library
         byte[] ReadFile(string relativePath);
     }
 
+    /// <summary>Generic metadata for one session track (frames, imu, …).</summary>
+    internal sealed class SfzTrackInfo
+    {
+        public string Name           { get; }
+        public double SampleInterval { get; }   // seconds between samples (1/fps, 1/rate_hz, …)
+        public int    RecordCount    { get; }   // 0 when unknown (live / no pre-parsed array)
+
+        internal SfzTrackInfo(string name, double sampleInterval, int recordCount)
+        {
+            Name           = name;
+            SampleInterval = sampleInterval;
+            RecordCount    = recordCount;
+        }
+    }
+
+    /// <summary>Generic metadata for one session attachment (scene_mesh, …).</summary>
+    internal sealed class SfzAttachmentInfo
+    {
+        public string Name   { get; }
+        public string File   { get; }   // relative path within the session root
+        public string Format { get; }   // e.g. "ply", or null if unspecified
+
+        internal SfzAttachmentInfo(string name, string file, string format)
+        {
+            Name   = name;
+            File   = file;
+            Format = format;
+        }
+    }
+
     internal sealed class SfzSessionData
     {
         public string SessionId { get; }
-        public double FrameInterval { get; }
-        public SfzUtils.SfzFrameRecordJson[] FrameRecords { get; }  // null for live (no pre-known array)
-        public int TotalFrames { get; }       // FrameRecords.Length, or int.MaxValue for live
-        public string SceneMeshFile { get; }  // null when no scene_mesh attachment
+
+        /// <summary>All tracks keyed by name (e.g. "frames", "imu").</summary>
+        public IReadOnlyDictionary<string, SfzTrackInfo> Tracks { get; }
+
+        /// <summary>All attachments keyed by name (e.g. "scene_mesh").</summary>
+        public IReadOnlyDictionary<string, SfzAttachmentInfo> Attachments { get; }
+
+        // Cached frame record array for TryLoadFrame — only accessed by SessionLoader.
+        internal SfzUtils.SfzFrameRecordJson[] FrameRecords { get; }
 
         internal SfzSessionData(
             string sessionId,
-            double frameInterval,
-            SfzUtils.SfzFrameRecordJson[] frameRecords,
-            string sceneMeshFile)
+            IReadOnlyDictionary<string, SfzTrackInfo>      tracks,
+            IReadOnlyDictionary<string, SfzAttachmentInfo> attachments,
+            SfzUtils.SfzFrameRecordJson[]                  frameRecords)
         {
-            SessionId     = sessionId ?? "session";
-            FrameInterval = frameInterval;
-            FrameRecords  = frameRecords;
-            TotalFrames   = frameRecords?.Length ?? int.MaxValue;
-            SceneMeshFile = sceneMeshFile;
+            SessionId   = sessionId ?? "session";
+            Tracks      = tracks      ?? new Dictionary<string, SfzTrackInfo>();
+            Attachments = attachments ?? new Dictionary<string, SfzAttachmentInfo>();
+            FrameRecords = frameRecords;
         }
     }
 
@@ -87,13 +123,32 @@ namespace SensorFlex.Player.Library
             if (raw == null || string.IsNullOrEmpty(raw.version))
                 return false;
 
-            int fps = raw.tracks?.frames?.metadata?.fps ?? 30;
+            var tracks = new Dictionary<string, SfzTrackInfo>();
+            if (raw.tracks?.frames != null)
+            {
+                int fps   = raw.tracks.frames.metadata?.fps ?? 30;
+                int count = raw.tracks.frames.data?.Length ?? 0;
+                tracks["frames"] = new SfzTrackInfo("frames", 1.0 / Math.Max(1, fps), count);
+            }
+            if (raw.tracks?.imu != null)
+            {
+                float hz  = raw.tracks.imu.metadata?.sample_rate_hz ?? 100f;
+                int count = raw.tracks.imu.data?.Length ?? 0;
+                tracks["imu"] = new SfzTrackInfo("imu", 1.0 / Math.Max(1f, hz), count);
+            }
+
+            var attachments = new Dictionary<string, SfzAttachmentInfo>();
+            if (raw.attachments?.scene_mesh != null)
+                attachments["scene_mesh"] = new SfzAttachmentInfo(
+                    "scene_mesh",
+                    raw.attachments.scene_mesh.file,
+                    raw.attachments.scene_mesh.format);
 
             data = new SfzSessionData(
-                sessionId:     raw.session_id,
-                frameInterval: 1.0 / Math.Max(1, fps),
-                frameRecords:  raw.tracks?.frames?.data,
-                sceneMeshFile: raw.attachments?.scene_mesh?.file);
+                raw.session_id,
+                tracks,
+                attachments,
+                raw.tracks?.frames?.data);
 
             return true;
         }
@@ -104,8 +159,11 @@ namespace SensorFlex.Player.Library
         /// </summary>
         public static void ApplyToState(SfzSessionData data, IFrameLoaderState state)
         {
-            state.TotalFrames                    = data.TotalFrames;
-            state.FrameInterval                  = data.FrameInterval;
+            bool hasFrames = data.Tracks.TryGetValue("frames", out var framesTrack);
+            state.TotalFrames   = hasFrames && framesTrack.RecordCount > 0
+                ? framesTrack.RecordCount
+                : int.MaxValue;
+            state.FrameInterval = hasFrames ? framesTrack.SampleInterval : 1.0 / 30;
             state.CoordConvMatrix                = Matrix4x4.identity;
             state.UseNegativeZForwardOpticalAxis = false;
         }
@@ -137,15 +195,19 @@ namespace SensorFlex.Player.Library
         }
 
         /// <summary>
-        /// Reads the scene mesh attachment bytes via <paramref name="provider"/>.
-        /// Returns null if the session has no scene_mesh attachment or the read fails.
+        /// Reads the bytes for a named attachment via <paramref name="provider"/>.
+        /// Returns null if the attachment is not present in the session or the read fails.
         /// </summary>
-        public static byte[] LoadSceneMeshBytes(SfzSessionData data, ISessionDataProvider provider)
+        public static byte[] LoadAttachmentBytes(
+            SfzSessionData data, string attachmentName, ISessionDataProvider provider)
         {
-            if (string.IsNullOrEmpty(data.SceneMeshFile))
+            if (!data.Attachments.TryGetValue(attachmentName, out var att))
                 return null;
 
-            return provider.ReadFile(data.SceneMeshFile);
+            if (string.IsNullOrEmpty(att.File))
+                return null;
+
+            return provider.ReadFile(att.File);
         }
     }
 }
