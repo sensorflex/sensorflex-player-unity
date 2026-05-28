@@ -18,7 +18,7 @@ namespace SensorFlexPlayer.Editor
             EditorGUILayout.PropertyField(modeProp);
             EditorGUILayout.Space();
 
-            var mode = (ARSensorFlexSession.FrameSourceMode)modeProp.enumValueIndex;
+            var mode = (ARSensorFlexSession.FrameSourceMode)modeProp.intValue;
 
             if (mode == ARSensorFlexSession.FrameSourceMode.Sfz)
             {
