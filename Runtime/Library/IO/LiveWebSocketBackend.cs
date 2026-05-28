@@ -49,7 +49,7 @@ namespace SensorFlex.Player.Library
 
         WebSocket           m_WebSocket;
         ARSensorFlexSession m_Session;
-        IFrameLoaderState   m_State;
+        IBackendState   m_State;
         int                 m_FramesToWait;
 
         bool   m_Started;
@@ -133,7 +133,7 @@ namespace SensorFlex.Player.Library
             m_ExpectedAttachments = data.Attachments.Count;
             m_AttachmentsTaken   = 0;
 
-            m_State = new FrameLoaderState(bufSize)
+            m_State = new BackendState(bufSize)
             {
                 TotalFrames       = int.MaxValue,
                 LatestGlobalIndex = -1,
@@ -162,7 +162,7 @@ namespace SensorFlex.Player.Library
 
         // ── ISessionBackend — runtime ─────────────────────────────────────────
 
-        public IFrameLoaderState State => m_State;
+        public IBackendState State => m_State;
 
         public void Dispatch()
         {

@@ -4,7 +4,7 @@
 // Both share the ring-buffer streaming logic in SfzBackendBase:
 //   Open()             — validate the path and store it (subclass)
 //   TryGetSessionJson() — read session.json from the source (subclass)
-//   StartLoading()     — create own FrameLoaderState, start background thread
+//   StartLoading()     — create own BackendState, start background thread
 //   TryGetAttachmentBytes() — one-shot read of an attachment file (subclass)
 //
 // The background thread (LoadFrames) loops over frame records and blocks
@@ -33,7 +33,7 @@ namespace SensorFlex.Player.Library
         const int UploadBatchSize = 3;
 
         protected ARSensorFlexSession m_Session;
-        protected IFrameLoaderState   m_State;
+        protected IBackendState   m_State;
         int    m_FramesToWait;
         volatile bool m_StopLoading;
         Thread m_LoadThread;
@@ -71,7 +71,7 @@ namespace SensorFlex.Player.Library
                 return;
             }
 
-            m_State = new FrameLoaderState(bufSize);
+            m_State = new BackendState(bufSize);
 
             bool hasFrames = m_SessionData.Tracks.TryGetValue("frames", out var framesTrack);
             m_State.TotalFrames   = hasFrames && framesTrack.RecordCount > 0
@@ -95,7 +95,7 @@ namespace SensorFlex.Player.Library
 
         // ── ISessionBackend — runtime ─────────────────────────────────────────
 
-        public IFrameLoaderState State => m_State;
+        public IBackendState State => m_State;
 
         public void Dispatch() { }
 
