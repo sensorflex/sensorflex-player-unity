@@ -186,9 +186,8 @@ namespace SensorFlex.Player.Subsystem
                     return;
                 }
 
-                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz  ||
-                    session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo ||
-                    session.SourceMode == ARSensorFlexSession.FrameSourceMode.Live)
+                if (session.SourceMode == ARSensorFlexSession.FrameSourceMode.Sfz ||
+                    session.SourceMode == ARSensorFlexSession.FrameSourceMode.FileIo)
                 {
                     m_IsSfzMode = true;
                     Debug.Log($"[SF] OcclusionSubsystem: {session.SourceMode} mode — reading depth from ring buffer.");

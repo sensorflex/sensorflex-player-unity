@@ -35,15 +35,15 @@ namespace SensorFlex.Player
 
         public enum FrameSourceMode
         {
-            Live = 1,
+            // Live = 1 — temporarily disabled; will be re-introduced via ARSensorFlexLiveSession.
             Sfz = 2,
             FileIo = 3
         }
 
         [Header("Frame Source")]
         [SerializeField] FrameSourceMode m_FrameSourceMode = FrameSourceMode.FileIo;
-        [Tooltip("WebSocket endpoint used when the frame source mode is WebSocket.")]
-        [SerializeField] string m_WebSocketUrl = "ws://localhost:3000";
+        // Kept for LiveWebSocketBackend compilation — not shown in inspector.
+        [HideInInspector] [SerializeField] string m_WebSocketUrl = "ws://localhost:3000";
         [Tooltip("Path to the .sfz archive. Can be absolute or relative to StreamingAssets.")]
         [SerializeField] string m_SfzFilePath = "";
         [Tooltip("Path to the SFZ session directory (containing session.json). Can be absolute or relative to StreamingAssets.")]
@@ -53,8 +53,8 @@ namespace SensorFlex.Player
         [Min(1)]
         [SerializeField] int m_PreloadFrameCount = 120;
         [SerializeField] bool m_LoopSequence = true;
-        [Tooltip("Live mode only: total ring buffer capacity. Determines max pause duration before the buffer overflows and jumps to latest.")]
-        [Min(1)]
+        // Kept for LiveWebSocketBackend compilation — not shown in inspector.
+        [HideInInspector] [Min(1)]
         [SerializeField] int m_TotalLiveBufferSize = 300;
 
         [Header("Depth (Occlusion)")]

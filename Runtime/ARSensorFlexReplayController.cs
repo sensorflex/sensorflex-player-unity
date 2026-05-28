@@ -66,11 +66,12 @@ namespace SensorFlex.Player
         // ── Drawing ───────────────────────────────────────────────────────────
         void DrawBar()
         {
-            if (ARSensorFlexSession.ActiveSession?.SourceMode == ARSensorFlexSession.FrameSourceMode.Live)
-            {
-                DrawLiveBar();
-                return;
-            }
+            // Live mode temporarily disabled — DrawLiveBar() preserved for future ARSensorFlexLiveSession.
+            // if (ARSensorFlexSession.ActiveSession?.SourceMode == ARSensorFlexSession.FrameSourceMode.Live)
+            // {
+            //     DrawLiveBar();
+            //     return;
+            // }
 
             float sidePad = Mathf.Max(6f, Screen.width * 0.008f);
             float btnH    = Mathf.Max(k_MinBtnH, Screen.height * 0.052f);

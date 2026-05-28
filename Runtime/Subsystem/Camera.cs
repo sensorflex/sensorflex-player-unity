@@ -73,7 +73,8 @@ namespace SensorFlex.Player.Subsystem
             int maxFramesToLoad;
             SessionLoader m_SessionLoader;
 
-            bool IsLiveMode => session?.SourceMode == ARSensorFlexSession.FrameSourceMode.Live;
+            // Live mode is temporarily disabled — always false until ARSensorFlexLiveSession is introduced.
+            bool IsLiveMode => false;
 
             Texture2D m_CurrentTexture;
             Material m_CameraMaterial;
@@ -232,9 +233,7 @@ namespace SensorFlex.Player.Subsystem
                 session.ApplySessionAlignment();
 
                 maxFramesToLoad = session.PreloadFrameCount;
-                FramesToWait = session.SourceMode == ARSensorFlexSession.FrameSourceMode.Live
-                    ? session.PreloadFrameCount
-                    : Math.Max(1, maxFramesToLoad / 4);
+                FramesToWait = Math.Max(1, maxFramesToLoad / 4);
 
                 ScannedSceneMeshBridge.Clear();
                 BeginFrameWarmup();

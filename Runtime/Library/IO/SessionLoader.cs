@@ -161,9 +161,7 @@ namespace SensorFlex.Player.Library
                 throw new InvalidOperationException("[SF] SessionLoader.Start() requires an active ARSensorFlexSession.");
 
             m_FramesToWait = framesToWait;
-            m_BufSize = session.SourceMode == ARSensorFlexSession.FrameSourceMode.Live
-                ? session.TotalLiveBufferSize
-                : maxFramesToLoad;
+            m_BufSize = maxFramesToLoad;
 
             m_StartedAttachments.Clear();
             m_Backend = CreateBackend(session.SourceMode);
@@ -300,7 +298,7 @@ namespace SensorFlex.Player.Library
         {
             ARSensorFlexSession.FrameSourceMode.Sfz    => new SfzFrameLoaderBackend(),
             ARSensorFlexSession.FrameSourceMode.FileIo => new FileIoFrameLoaderBackend(),
-            ARSensorFlexSession.FrameSourceMode.Live   => new LiveWebSocketBackend(),
+            // Live mode is temporarily disabled. It will be re-introduced via ARSensorFlexLiveSession.
             _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
         };
     }
