@@ -6,7 +6,7 @@
 //   3. StartLoading()      — allocates ring buffer, enables frame drain
 //
 // Protocol (server-initiated after hello):
-//   session.json text message  — parsed by SessionLoader via TryGetSessionJson
+//   session.json text message  — parsed by FrameLoader via TryGetSessionJson
 //   SFAT binary packets        — attachment bytes stored; served via TryGetAttachmentBytes
 //   SFWP binary frame stream   — frames held until all expected attachments consumed
 //
@@ -175,7 +175,7 @@ namespace SensorFlex.Player.Library
         {
             if (m_State == null) return;
 
-            // Hold frames until all expected attachments have been handed to SessionLoader.
+            // Hold frames until all expected attachments have been handed to FrameLoader.
             if (m_AttachmentsTaken < m_ExpectedAttachments) return;
 
             int uploaded = 0;

@@ -1,9 +1,9 @@
-// ScannedMeshLoader.cs — background PLY parse operation for session scene-mesh attachments.
+// ScannedMeshLoader.cs — scene-mesh attachment orchestrator and background PLY parser.
 //
-// Entry point: ScannedSceneMeshLoadOperation.StartFromPlyBytes(bytes, coordConvMatrix, sceneId).
-// Called by SessionLoader.ProcessAttachments() for all source modes. Kicks off a background
-// Task to parse raw PLY bytes; each Unity frame the caller polls TryComplete() — when done,
-// BuildUnityMesh() uploads the result to a Unity Mesh on the main thread.
+// ScannedMeshLoader.Tick(loader) is called each frame by Camera.cs. It watches for the
+// "scene_mesh" attachment to become available on the FrameLoader, kicks off a background
+// PLY parse via ScannedSceneMeshLoadOperation, polls TryComplete() each frame, and publishes
+// the finished Mesh to ScannedSceneMeshBridge — which ARSensorFlexSceneMesh subscribes to.
 //
 // PlyMeshReader handles PLY decoding: ASCII and binary-little-endian formats, polygon faces of
 // any valence (fan-triangulated), and the standard vertex attributes x/y/z, nx/ny/nz,
@@ -22,6 +22,60 @@ using UnityEngine.Rendering;
 
 namespace SensorFlex.Player.Library
 {
+    // ── ScannedMeshLoader ─────────────────────────────────────────────────────
+    // Watches a FrameLoader each frame for the "scene_mesh" attachment, kicks off
+    // the PLY parse, and publishes the result to ScannedSceneMeshBridge.
+
+    internal sealed class ScannedMeshLoader
+    {
+        // ScanNet++ PLY meshes are in ARKit space (right-handed, -Z forward).
+        // Flip Z so positions land in the same Unity world space as the camera poses.
+        // TODO: remove once the SFZ exporter writes PLY vertices in Unity world space.
+        static readonly Matrix4x4 k_ArkitToUnity = new Matrix4x4(
+            new Vector4( 1, 0,  0, 0),
+            new Vector4( 0, 1,  0, 0),
+            new Vector4( 0, 0, -1, 0),
+            new Vector4( 0, 0,  0, 1));
+
+        ScannedSceneMeshLoadOperation m_PendingLoad;
+        bool m_Started;
+
+        public void Tick(FrameLoader loader)
+        {
+            if (loader?.SessionData == null) return;
+
+            if (!m_Started && loader.SessionData.Attachments.ContainsKey("scene_mesh"))
+            {
+                var bytes = loader.TryConsumeAttachment("scene_mesh");
+                if (bytes != null)
+                {
+                    m_PendingLoad = ScannedSceneMeshLoadOperation.StartFromPlyBytes(
+                        bytes, k_ArkitToUnity, loader.SessionData.SessionId);
+                    m_Started = true;
+                    Debug.Log("[SF] ScannedMeshLoader: scene_mesh loading started.");
+                }
+            }
+
+            if (m_PendingLoad == null) return;
+            if (!m_PendingLoad.TryComplete(out var mesh)) return;
+
+            if (mesh != null)
+            {
+                ScannedSceneMeshBridge.SetMesh(mesh, m_PendingLoad.SceneId);
+                Debug.Log($"[SF] Mesh ready: vertices={mesh.vertexCount} triangles={mesh.triangles.Length / 3}");
+            }
+            m_PendingLoad = null;
+        }
+
+        public void Reset()
+        {
+            m_PendingLoad = null;
+            m_Started = false;
+        }
+    }
+
+    // ── ScannedSceneMeshLoadOperation ─────────────────────────────────────────
+
     internal sealed class ScannedSceneMeshLoadOperation
     {
         readonly Task<ScannedSceneMeshData> m_Task;
@@ -36,7 +90,7 @@ namespace SensorFlex.Player.Library
             m_SceneId = sceneId;
         }
 
-        // Entry point — called by SessionLoader.ProcessAttachments() for all source modes.
+        // Entry point — called by FrameLoader.ProcessAttachments() for all source modes.
         public static ScannedSceneMeshLoadOperation StartFromPlyBytes(
             byte[] plyBytes, Matrix4x4 coordConvMatrix, string sceneId)
         {

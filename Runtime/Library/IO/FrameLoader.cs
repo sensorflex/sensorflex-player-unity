@@ -1,11 +1,11 @@
-// SessionLoader.cs — session lifecycle coordinator and data model.
+// FrameLoader.cs — session lifecycle coordinator and data model.
 //
-// SessionLoader is an instance object (owned by Camera.cs) that drives the full
+// FrameLoader is an instance object (owned by Camera.cs) that drives the full
 // session lifecycle through a four-state machine:
 //
 //   Idle    — not started
 //   Waiting — backend opened; polling TryGetSessionJson() each Tick()
-//   Loading — session.json parsed; streaming frames + loading attachments
+//   Loading — session.json parsed; streaming frames
 //   Ready   — enough frames buffered to begin playback
 //
 // ISessionBackend is the three-phase contract for all I/O backends:
@@ -15,6 +15,9 @@
 //
 // Session data model (SfzSessionData) uses generic track and attachment maps so
 // new data types can be added without changing this file.
+//
+// Attachment bytes are exposed via TryConsumeAttachment() — consumed once,
+// then null. ScannedMeshLoader.cs owns the attachment-to-mesh pipeline.
 
 using System;
 using System.Collections.Generic;
@@ -139,8 +142,6 @@ namespace SensorFlex.Player.Library
         /// <summary>
         /// Returns the raw bytes for a named attachment when available, null otherwise.
         /// Calling this consumes the bytes (subsequent calls return null for the same name).
-        /// File backends return bytes immediately on first call; the live backend returns
-        /// null until the SFAT packet for that attachment has been received.
         /// </summary>
         byte[] TryGetAttachmentBytes(string attachmentName);
 
@@ -202,26 +203,21 @@ namespace SensorFlex.Player.Library
         }
     }
 
-    // ── SessionLoader ─────────────────────────────────────────────────────────
+    // ── FrameLoader ───────────────────────────────────────────────────────────
 
-    internal sealed class SessionLoader
+    internal sealed class FrameLoader
     {
-        SessionLoadState     m_LoadState = SessionLoadState.Idle;
-        ISessionBackend      m_Backend;
-        SfzSessionData       m_SessionData;
-        int                  m_BufSize;
-        int                  m_FramesToWait;
-        readonly HashSet<string> m_StartedAttachments = new();
+        SessionLoadState m_LoadState = SessionLoadState.Idle;
+        ISessionBackend  m_Backend;
+        SfzSessionData   m_SessionData;
+        int              m_BufSize;
+        int              m_FramesToWait;
 
         // ── Public state ──────────────────────────────────────────────────────
 
         public SessionLoadState LoadState   => m_LoadState;
         public bool             IsReady     => m_LoadState == SessionLoadState.Ready;
         public SfzSessionData   SessionData => m_SessionData;
-
-        /// <summary>In-progress PLY mesh parse; polled and cleared by Camera.cs.</summary>
-        public ScannedSceneMeshLoadOperation PendingMeshLoad { get; private set; }
-        public void ClearPendingMeshLoad() => PendingMeshLoad = null;
 
         // ── Frame data — delegated to backend state ───────────────────────────
 
@@ -250,27 +246,25 @@ namespace SensorFlex.Player.Library
         public void Start(ARSensorFlexSession session, int maxFramesToLoad, int framesToWait)
         {
             if (session == null)
-                throw new InvalidOperationException("[SF] SessionLoader.Start() requires an active ARSensorFlexSession.");
+                throw new InvalidOperationException("[SF] FrameLoader.Start() requires an active ARSensorFlexSession.");
 
             m_FramesToWait = framesToWait;
             m_BufSize = maxFramesToLoad;
 
-            m_StartedAttachments.Clear();
             m_Backend = CreateBackend(session.SourceMode);
 
             if (!m_Backend.Open(session))
             {
-                Debug.LogError("[SF] SessionLoader: backend failed to open.");
+                Debug.LogError("[SF] FrameLoader: backend failed to open.");
                 return;
             }
 
             m_LoadState = SessionLoadState.Waiting;
-            Debug.Log($"[SF] SessionLoader: waiting for session data. mode={session.SourceMode}");
+            Debug.Log($"[SF] FrameLoader: waiting for session data. mode={session.SourceMode}");
         }
 
         /// <summary>
-        /// Drive the state machine. Call once per Unity frame from Camera.cs —
-        /// replaces the old DrainUploadQueue() + DispatchWebSocket() pair.
+        /// Drive the state machine. Call once per Unity frame from Camera.cs.
         /// </summary>
         public void Tick()
         {
@@ -283,7 +277,7 @@ namespace SensorFlex.Player.Library
                     {
                         m_Backend.StartLoading(m_SessionData, m_BufSize, m_FramesToWait);
                         m_LoadState = SessionLoadState.Loading;
-                        Debug.Log($"[SF] SessionLoader: session loaded. id={m_SessionData.SessionId} " +
+                        Debug.Log($"[SF] FrameLoader: session loaded. id={m_SessionData.SessionId} " +
                                   $"tracks={m_SessionData.Tracks.Count} attachments={m_SessionData.Attachments.Count}");
                     }
                     break;
@@ -291,16 +285,21 @@ namespace SensorFlex.Player.Library
                 case SessionLoadState.Loading:
                 case SessionLoadState.Ready:
                     m_Backend.DrainMainThreadWork();
-                    ProcessAttachments();
 
                     if (m_LoadState == SessionLoadState.Loading && m_Backend.State?.IsReady == true)
                     {
                         m_LoadState = SessionLoadState.Ready;
-                        Debug.Log("[SF] SessionLoader: ready.");
+                        Debug.Log("[SF] FrameLoader: ready.");
                     }
                     break;
             }
         }
+
+        /// <summary>
+        /// Returns raw bytes for a named attachment once available, then null on subsequent calls.
+        /// Delegates single-consume semantics to the backend.
+        /// </summary>
+        public byte[] TryConsumeAttachment(string name) => m_Backend?.TryGetAttachmentBytes(name);
 
         public async Task StopAsync()
         {
@@ -310,39 +309,6 @@ namespace SensorFlex.Player.Library
         }
 
         public void DestroyTextures() => m_Backend?.State?.DestroyTextures();
-
-        // ── Attachment orchestration ──────────────────────────────────────────
-
-        // ScanNet++ PLY meshes are in ARKit space (right-handed, -Z forward).
-        // Flip Z so positions land in the same Unity world space as the camera poses.
-        // TODO: remove once the SFZ exporter writes PLY vertices in Unity world space.
-        static readonly Matrix4x4 k_ArkitToUnity = new Matrix4x4(
-            new Vector4( 1, 0,  0, 0),
-            new Vector4( 0, 1,  0, 0),
-            new Vector4( 0, 0, -1, 0),
-            new Vector4( 0, 0,  0, 1));
-
-        void ProcessAttachments()
-        {
-            if (m_SessionData == null) return;
-
-            foreach (var (name, _) in m_SessionData.Attachments)
-            {
-                if (m_StartedAttachments.Contains(name)) continue;
-
-                var bytes = m_Backend.TryGetAttachmentBytes(name);
-                if (bytes == null) continue;
-
-                if (name == "scene_mesh")
-                {
-                    PendingMeshLoad = ScannedSceneMeshLoadOperation.StartFromPlyBytes(
-                        bytes, k_ArkitToUnity, m_SessionData.SessionId);
-                    Debug.Log("[SF] SessionLoader: scene_mesh loading started.");
-                }
-
-                m_StartedAttachments.Add(name);
-            }
-        }
 
         // ── Helpers ───────────────────────────────────────────────────────────
 

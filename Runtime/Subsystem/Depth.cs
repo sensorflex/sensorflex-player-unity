@@ -9,7 +9,7 @@ namespace SensorFlex.Player.Subsystem
 {
     /// <summary>
     /// XROcclusionSubsystem provider that serves environment depth from the active
-    /// SessionLoader ring buffer. Supported for Sfz, FileIo, and Live (WebSocket) modes.
+    /// FrameLoader ring buffer. Supported for Sfz, FileIo, and Live (WebSocket) modes.
     ///</summary>
     public sealed class OcclusionSubsystem : XROcclusionSubsystem
     {
