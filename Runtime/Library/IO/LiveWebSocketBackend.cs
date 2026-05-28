@@ -164,23 +164,19 @@ namespace SensorFlex.Player.Library
         {
             if (m_HasSession) return; // only parse once per connection
 
-            var sfzSession = JsonUtility.FromJson<SfzUtils.SfzSessionJson>(json);
-            if (sfzSession == null || string.IsNullOrEmpty(sfzSession.version))
+            if (!SessionLoader.TryParse(json, out var sessionData))
             {
                 Debug.LogWarning("[SF] Live WS: first JSON message is not a valid session.json.");
                 return;
             }
 
-            m_SessionId = sfzSession.session_id ?? "live";
-            int fps = sfzSession.tracks?.frames?.metadata?.fps ?? 30;
-            m_State.FrameInterval              = 1.0 / Math.Max(1, fps);
-            m_State.CoordConvMatrix            = Matrix4x4.identity; // session.json is Unity world space
-            m_State.UseNegativeZForwardOpticalAxis = false;
+            m_SessionId           = sessionData.SessionId;
+            m_ExpectedAttachments = sessionData.SceneMeshFile != null ? 1 : 0;
+            m_HasSession          = true;
 
-            m_ExpectedAttachments = sfzSession.attachments?.scene_mesh != null ? 1 : 0;
-            m_HasSession = true;
+            SessionLoader.ApplyToState(sessionData, m_State);
 
-            Debug.Log($"[SF] Live WS: session received. id={m_SessionId} fps={fps} expectedAttachments={m_ExpectedAttachments}");
+            Debug.Log($"[SF] Live WS: session received. id={m_SessionId} fps={1.0/m_State.FrameInterval:F0} expectedAttachments={m_ExpectedAttachments}");
         }
 
         // SFAT: [4B magic][1B version][1B type][4B nameLen][name...][4B dataLen][data...]

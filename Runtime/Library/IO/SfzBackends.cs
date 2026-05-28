@@ -20,7 +20,7 @@ namespace SensorFlex.Player.Library
         public byte[] DepthBin;
     }
 
-    internal abstract class SfzBackendBase : IFrameLoaderBackend
+    internal abstract class SfzBackendBase : IFrameLoaderBackend, ISessionDataProvider
     {
         const int UploadBatchSize = 3;
 
@@ -35,7 +35,7 @@ namespace SensorFlex.Player.Library
         bool m_LoggedFirstUpload;
         bool m_LoggedReady;
 
-        SfzUtils.SfzFrameRecordJson[] m_FrameRecords;
+        SfzSessionData m_SessionData;
 
         public void Start(ARSensorFlexSession session, IFrameLoaderState state, int framesToWait)
         {
@@ -48,45 +48,36 @@ namespace SensorFlex.Player.Library
             m_LoggedFirstUpload  = false;
             m_LoggedReady        = false;
 
-            if (!TryReadSessionJson(out var sessionJson))
+            if (!SessionLoader.TryLoad(this, out m_SessionData))
                 return;
 
-            var framesTrack = sessionJson?.tracks?.frames;
-            if (framesTrack?.data == null || framesTrack.data.Length == 0)
+            if (m_SessionData.FrameRecords == null || m_SessionData.FrameRecords.Length == 0)
             {
                 Debug.LogError("[SF] SFZ session.json: frames track missing or empty.");
                 return;
             }
 
-            m_FrameRecords         = framesTrack.data;
-            state.TotalFrames      = m_FrameRecords.Length;
-            state.FrameInterval    = 1.0 / Math.Max(1, framesTrack.metadata?.fps ?? 30);
-            state.CoordConvMatrix  = Matrix4x4.identity;
-            state.UseNegativeZForwardOpticalAxis = false;
+            SessionLoader.ApplyToState(m_SessionData, state);
             state.AllocateRingBuffer();
 
             m_UploadQueue = new System.Collections.Concurrent.ConcurrentQueue<SfzLoadedFrame>();
             m_LoadThread  = new Thread(LoadFrames) { IsBackground = true, Name = "SF-SfzLoader" };
             m_LoadThread.Start();
 
-            Debug.Log($"[SF] {BackendLabel} streaming started. frames={state.TotalFrames} fps={framesTrack.metadata?.fps} bufSize={state.BufSize}");
+            Debug.Log($"[SF] {BackendLabel} streaming started. frames={state.TotalFrames} fps={1.0/state.FrameInterval:F0} bufSize={state.BufSize}");
         }
 
-        // Subclass contract ──────────────────────────────────────────────────────
+        // Subclass contract — ISessionDataProvider ───────────────────────────────
 
         protected abstract string BackendLabel { get; }
-
-        // Returns false and logs an error on failure.
-        protected abstract bool TryReadSessionJson(out SfzUtils.SfzSessionJson sessionJson);
-
-        // Returns the file bytes for a path relative to the session root, or null if missing.
-        protected abstract byte[] ReadSessionFile(string relativePath);
+        public abstract bool TryReadJson(out string json);
+        public abstract byte[] ReadFile(string relativePath);
 
         // ────────────────────────────────────────────────────────────────────────
 
         void LoadFrames()
         {
-            bool looping  = m_Session.LoopSequence;
+            bool looping   = m_Session.LoopSequence;
             int  iteration = 0;
 
             while (!m_StopLoading)
@@ -95,18 +86,9 @@ namespace SensorFlex.Player.Library
                 BeginLoadPass();
                 try
                 {
-                    for (int i = 0; i < m_FrameRecords.Length && !m_StopLoading; i++)
+                    for (int i = 0; i < m_SessionData.FrameRecords.Length && !m_StopLoading; i++)
                     {
-                        var record = m_FrameRecords[i];
-                        if (string.IsNullOrEmpty(record.rgb?.file))
-                            continue;
-
-                        byte[] jpg   = ReadSessionFile(record.rgb.file);
-                        byte[] depth = !string.IsNullOrEmpty(record.depth?.file)
-                            ? ReadSessionFile(record.depth.file)
-                            : null;
-
-                        if (jpg == null)
+                        if (!SessionLoader.TryLoadFrame(m_SessionData, i, this, out var jpg, out var depth))
                             continue;
 
                         Enqueue(globalOffset + i, i, jpg, depth);
@@ -175,11 +157,12 @@ namespace SensorFlex.Player.Library
                 m_State.Frames[slot].Apply();
                 m_State.DepthBins[slot] = item.DepthBin;
 
-                if (m_FrameRecords != null &&
+                var frameRecords = m_SessionData?.FrameRecords;
+                if (frameRecords != null &&
                     item.RecordIndex >= 0 &&
-                    item.RecordIndex < m_FrameRecords.Length)
+                    item.RecordIndex < frameRecords.Length)
                 {
-                    var record = m_FrameRecords[item.RecordIndex];
+                    var record = frameRecords[item.RecordIndex];
                     if (record.camera?.pose != null)
                         m_State.Poses[slot] = SfzUtils.SfzPoseToMatrix4x4(record.camera.pose);
                     if (record.camera?.intrinsics != null)
@@ -231,9 +214,9 @@ namespace SensorFlex.Player.Library
 
         protected override string BackendLabel => "SFZ";
 
-        protected override bool TryReadSessionJson(out SfzUtils.SfzSessionJson sessionJson)
+        public override bool TryReadJson(out string json)
         {
-            sessionJson = null;
+            json = null;
 
             m_ArchivePath = m_Session.SfzFilePath;
             if (!Path.IsPathRooted(m_ArchivePath))
@@ -255,12 +238,9 @@ namespace SensorFlex.Player.Library
                     return false;
                 }
 
-                string json;
-                using (var sr = new StreamReader(entry.Open()))
-                    json = sr.ReadToEnd();
-
-                sessionJson = JsonUtility.FromJson<SfzUtils.SfzSessionJson>(json);
-                return sessionJson != null;
+                using var sr = new StreamReader(entry.Open());
+                json = sr.ReadToEnd();
+                return true;
             }
             catch (Exception e)
             {
@@ -281,7 +261,7 @@ namespace SensorFlex.Player.Library
             m_PassArchive = null;
         }
 
-        protected override byte[] ReadSessionFile(string relativePath)
+        public override byte[] ReadFile(string relativePath)
         {
             try
             {
@@ -302,9 +282,9 @@ namespace SensorFlex.Player.Library
 
         protected override string BackendLabel => "FileIo";
 
-        protected override bool TryReadSessionJson(out SfzUtils.SfzSessionJson sessionJson)
+        public override bool TryReadJson(out string json)
         {
-            sessionJson = null;
+            json = null;
 
             m_SessionDir = m_Session.FileIoPath;
             if (!Path.IsPathRooted(m_SessionDir))
@@ -319,8 +299,8 @@ namespace SensorFlex.Player.Library
 
             try
             {
-                sessionJson = JsonUtility.FromJson<SfzUtils.SfzSessionJson>(File.ReadAllText(jsonPath));
-                return sessionJson != null;
+                json = File.ReadAllText(jsonPath);
+                return true;
             }
             catch (Exception e)
             {
@@ -329,7 +309,7 @@ namespace SensorFlex.Player.Library
             }
         }
 
-        protected override byte[] ReadSessionFile(string relativePath)
+        public override byte[] ReadFile(string relativePath)
         {
             string fullPath = Path.Combine(m_SessionDir, relativePath);
             if (!File.Exists(fullPath))

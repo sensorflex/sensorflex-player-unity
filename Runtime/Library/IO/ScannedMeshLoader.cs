@@ -114,37 +114,16 @@ namespace SensorFlex.Player.Library
                 return null;
             }
 
-            string meshFile;
-            string sceneId;
-            using (var archive = new ZipArchive(File.OpenRead(archivePath), ZipArchiveMode.Read))
-            {
-                var sessionEntry = archive.GetEntry("session/session.json");
-                if (sessionEntry == null)
-                {
-                    Debug.LogWarning("[SF] session/session.json not found in SFZ archive.");
-                    return null;
-                }
+            var provider = new SfzArchiveProvider(archivePath);
+            if (!SessionLoader.TryLoad(provider, out var sessionData))
+                return null;
 
-                string json;
-                using (var sr = new StreamReader(sessionEntry.Open()))
-                    json = sr.ReadToEnd();
+            var plyBytes = SessionLoader.LoadSceneMeshBytes(sessionData, provider);
+            if (plyBytes == null)
+                return null;
 
-                var sfzSession = JsonUtility.FromJson<SfzUtils.SfzSessionJson>(json);
-                meshFile = sfzSession?.attachments?.scene_mesh?.file;
-                if (string.IsNullOrEmpty(meshFile))
-                    return null;
-
-                sceneId = sfzSession.session_id ?? "sfz";
-
-                if (archive.GetEntry($"session/{meshFile}") == null)
-                {
-                    Debug.LogError($"[SF] Scene mesh entry missing: session/{meshFile}");
-                    return null;
-                }
-            }
-
-            var task = Task.Run(() => LoadMeshFromArchive(archivePath, $"session/{meshFile}"));
-            return new ScannedSceneMeshLoadOperation(task, sceneId);
+            var task = Task.Run(() => PlyMeshReader.Parse(plyBytes, k_ArkitToUnity));
+            return new ScannedSceneMeshLoadOperation(task, sessionData.SessionId);
         }
 
         static ScannedSceneMeshLoadOperation StartFromFileIo(ARSensorFlexSession session)
@@ -153,28 +132,91 @@ namespace SensorFlex.Player.Library
             if (!Path.IsPathRooted(dir))
                 dir = Path.Combine(Application.streamingAssetsPath, dir);
 
-            string sessionJsonPath = Path.Combine(dir, "session.json");
-            if (!File.Exists(sessionJsonPath))
-            {
-                Debug.LogWarning($"[SF] session.json not found at {sessionJsonPath}.");
+            var provider = new FileIoProvider(dir);
+            if (!SessionLoader.TryLoad(provider, out var sessionData))
                 return null;
+
+            var plyBytes = SessionLoader.LoadSceneMeshBytes(sessionData, provider);
+            if (plyBytes == null)
+                return null;
+
+            var task = Task.Run(() => PlyMeshReader.Parse(plyBytes, k_ArkitToUnity));
+            return new ScannedSceneMeshLoadOperation(task, sessionData.SessionId);
+        }
+
+        // ── ISessionDataProvider implementations ──────────────────────────────
+
+        sealed class SfzArchiveProvider : ISessionDataProvider
+        {
+            readonly string m_ArchivePath;
+
+            public SfzArchiveProvider(string archivePath) { m_ArchivePath = archivePath; }
+
+            public bool TryReadJson(out string json)
+            {
+                json = null;
+                try
+                {
+                    using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
+                    var entry = archive.GetEntry("session/session.json");
+                    if (entry == null) return false;
+                    using var sr = new StreamReader(entry.Open());
+                    json = sr.ReadToEnd();
+                    return true;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[SF] SFZ: failed to read session.json: " + e.Message);
+                    return false;
+                }
             }
 
-            var sfzSession = JsonUtility.FromJson<SfzUtils.SfzSessionJson>(File.ReadAllText(sessionJsonPath));
-            string meshFile = sfzSession?.attachments?.scene_mesh?.file;
-            if (string.IsNullOrEmpty(meshFile))
-                return null;
-
-            string meshPath = Path.Combine(dir, meshFile);
-            if (!File.Exists(meshPath))
+            public byte[] ReadFile(string relativePath)
             {
-                Debug.LogError($"[SF] Scene mesh file missing: {meshPath}");
-                return null;
+                try
+                {
+                    using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
+                    var entry = archive.GetEntry($"session/{relativePath}");
+                    return entry != null ? SfzUtils.ReadEntry(entry) : null;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[SF] SFZ: failed to read {relativePath}: {e.Message}");
+                    return null;
+                }
+            }
+        }
+
+        sealed class FileIoProvider : ISessionDataProvider
+        {
+            readonly string m_Dir;
+
+            public FileIoProvider(string dir) { m_Dir = dir; }
+
+            public bool TryReadJson(out string json)
+            {
+                json = null;
+                string path = Path.Combine(m_Dir, "session.json");
+                if (!File.Exists(path))
+                {
+                    Debug.LogWarning($"[SF] FileIo: session.json not found at {path}");
+                    return false;
+                }
+                try   { json = File.ReadAllText(path); return true; }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[SF] FileIo: failed to read session.json: " + e.Message);
+                    return false;
+                }
             }
 
-            string sceneId = sfzSession.session_id ?? "fileio";
-            var task = Task.Run(() => LoadMeshFromFile(meshPath));
-            return new ScannedSceneMeshLoadOperation(task, sceneId);
+            public byte[] ReadFile(string relativePath)
+            {
+                string fullPath = Path.Combine(m_Dir, relativePath);
+                if (!File.Exists(fullPath)) return null;
+                try   { return File.ReadAllBytes(fullPath); }
+                catch { return null; }
+            }
         }
 
         public bool TryComplete(out Mesh mesh)
