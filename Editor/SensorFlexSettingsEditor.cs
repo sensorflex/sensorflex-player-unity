@@ -20,11 +20,7 @@ namespace SensorFlexPlayer.Editor
 
             var mode = (ARSensorFlexSession.FrameSourceMode)modeProp.enumValueIndex;
 
-            if (mode == ARSensorFlexSession.FrameSourceMode.Live)
-            {
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_WebSocketUrl"));
-            }
-            else if (mode == ARSensorFlexSession.FrameSourceMode.Sfz)
+            if (mode == ARSensorFlexSession.FrameSourceMode.Sfz)
             {
                 var pathProp = serializedObject.FindProperty("m_SfzFilePath");
                 EditorGUILayout.BeginHorizontal();
@@ -53,19 +49,8 @@ namespace SensorFlexPlayer.Editor
 
             EditorGUILayout.Space();
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PreloadFrameCount"),
-                new GUIContent(mode == ARSensorFlexSession.FrameSourceMode.Live
-                    ? "Preload Buffer Size"
-                    : "Preload Frame Count"));
-            if (mode == ARSensorFlexSession.FrameSourceMode.Live)
-            {
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_TotalLiveBufferSize"),
-                    new GUIContent("Total Buffer Size",
-                        "Ring buffer capacity while paused. Overflow jumps to latest frame."));
-            }
-            else
-            {
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
-            }
+                new GUIContent("Preload Frame Count"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("World Alignment", EditorStyles.boldLabel);
