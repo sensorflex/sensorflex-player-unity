@@ -43,7 +43,7 @@ namespace SensorFlex.Player.Library
         bool m_LoggedFirstUpload;
         bool m_LoggedReady;
 
-        SfzSessionData m_SessionData;
+        protected SfzSessionData m_SessionData;
 
         // ── ISessionBackend — Phase 1 ─────────────────────────────────────────
 
