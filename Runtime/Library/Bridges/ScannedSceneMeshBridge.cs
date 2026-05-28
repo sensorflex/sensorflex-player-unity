@@ -3,11 +3,7 @@ using UnityEngine;
 
 namespace SensorFlex.Player
 {
-    /// <summary>
-    /// Lightweight static bridge for the offline scanned scene mesh packaged in a SensorFlex ZIP.
-    /// The bridge owns the current mesh instance and notifies listeners when a new mesh is available.
-    /// </summary>
-    public static class ScannedSceneMeshBridge
+    internal static class ScannedSceneMeshBridge
     {
         public static bool HasMesh => LatestMesh != null;
         public static string SceneId { get; private set; }

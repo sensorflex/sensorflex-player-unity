@@ -88,6 +88,7 @@ namespace SensorFlex.Player.Subsystem
             bool m_LoggedNonEmptyTextureDescriptors;
             bool m_LoggedWaitingForSession;
             bool m_StepForwardPending;
+            double m_LiveLastAdvanceTime;
 
             public override Material cameraMaterial
             {
@@ -211,15 +212,19 @@ namespace SensorFlex.Player.Subsystem
                 if (m_StartupStage == StartupStage.Playing && !ControlBridge.IsPlaying)
                     return;
 
-                double effectiveInterval = IsLiveMode
-                    ? frameInterval
-                    : frameInterval / Math.Max(0.05, ControlBridge.PlaybackSpeed);
-                if (Time.realtimeSinceStartupAsDouble < nextFrameTime)
-                    return;
-
-                nextFrameTime = Time.realtimeSinceStartupAsDouble + effectiveInterval;
-
-                UpdateBufferedFrame();
+                if (IsLiveMode)
+                {
+                    // Live mode: always run — time-proportional advance happens inside UpdateBufferedFrame.
+                    UpdateBufferedFrame();
+                }
+                else
+                {
+                    double effectiveInterval = frameInterval / Math.Max(0.05, ControlBridge.PlaybackSpeed);
+                    if (Time.realtimeSinceStartupAsDouble < nextFrameTime)
+                        return;
+                    nextFrameTime = Time.realtimeSinceStartupAsDouble + effectiveInterval;
+                    UpdateBufferedFrame();
+                }
             }
 
             bool EnsureSessionInitialized()
@@ -302,6 +307,7 @@ namespace SensorFlex.Player.Subsystem
                             m_LoadingOverlay?.Hide();
 
                         m_StartupStage = StartupStage.Playing;
+                        m_LiveLastAdvanceTime = Time.realtimeSinceStartupAsDouble;
 
                         // Start from the latest buffered frame — the preload just ensures
                         // the ring buffer is warm so there are no stalls at startup.
@@ -360,35 +366,50 @@ namespace SensorFlex.Player.Subsystem
                     if (latest < 0) return;
 
                     int lag = latest - m_Loader.PlayHead;
-
-                    Debug.Log($"[SF-Buf] ph={m_Loader.PlayHead} latest={latest} lag={lag} pending={m_Loader.PendingDecodeCount}");
-
                     if (lag == 0) return; // at live edge, waiting for next frame
 
                     if (lag > k_LiveSnapLag)
                     {
                         // Too far behind (paused too long or display rate << server rate).
-                        // Snap to latest and continue from there.
+                        // Snap to latest and reset the advance clock.
                         Debug.LogWarning($"[SF] Live lag={lag} exceeded snap threshold — jumping to latest.");
                         int snapSlot = latest % m_Loader.BufSize;
                         if (m_Loader.SlotReady[snapSlot] && m_Loader.SlotGlobalIdx[snapSlot] == latest)
                         {
                             m_Loader.PlayHead = latest;
+                            m_LiveLastAdvanceTime = Time.realtimeSinceStartupAsDouble;
                             PlayBufferedSlot(snapSlot);
                             OnFramesReady?.Invoke();
                         }
                         return;
                     }
 
-                    // Sequential advance — always move by exactly one frame so motion is smooth.
-                    int nextSeqNum  = m_Loader.PlayHead + 1;
-                    int liveNextSlot = nextSeqNum % m_Loader.BufSize;
-                    if (!m_Loader.SlotReady[liveNextSlot] || m_Loader.SlotGlobalIdx[liveNextSlot] != nextSeqNum)
-                        return; // frame not decoded yet
+                    // Time-proportional advance: consume as many frames as real time dictates so
+                    // playback rate matches server rate regardless of display frame rate.
+                    double now = Time.realtimeSinceStartupAsDouble;
+                    int stepsElapsed   = (int)Math.Floor((now - m_LiveLastAdvanceTime) / frameInterval);
+                    int stepsToAdvance = Math.Min(stepsElapsed, lag);
 
-                    m_Loader.PlayHead = nextSeqNum;
-                    PlayBufferedSlot(liveNextSlot);
-                    OnFramesReady?.Invoke();
+                    if (stepsToAdvance <= 0) return;
+
+                    m_LiveLastAdvanceTime += stepsToAdvance * frameInterval;
+
+                    int lastPlayedSlot = -1;
+                    for (int i = 0; i < stepsToAdvance; i++)
+                    {
+                        int nextSeqNum   = m_Loader.PlayHead + 1;
+                        int liveNextSlot = nextSeqNum % m_Loader.BufSize;
+                        if (!m_Loader.SlotReady[liveNextSlot] || m_Loader.SlotGlobalIdx[liveNextSlot] != nextSeqNum)
+                            break; // frame not decoded yet — stop here
+                        m_Loader.PlayHead = nextSeqNum;
+                        lastPlayedSlot    = liveNextSlot;
+                    }
+
+                    if (lastPlayedSlot >= 0)
+                    {
+                        PlayBufferedSlot(lastPlayedSlot);
+                        OnFramesReady?.Invoke();
+                    }
                     return;
                 }
 
@@ -433,7 +454,7 @@ namespace SensorFlex.Player.Subsystem
                     m_Loader.Poses[slot] != Matrix4x4.zero)
                 {
                     PoseBridge.SetUnityPose(
-                        ArchiveIOUtils.ConvertToUnityPose(
+                        SfzUtils.ConvertToUnityPose(
                             m_Loader.Poses[slot],
                             m_Loader.CoordConvMatrix,
                             m_Loader.UseNegativeZForwardOpticalAxis));
@@ -549,7 +570,7 @@ namespace SensorFlex.Player.Subsystem
                 ARSensorFlexSession.GetPreferredClipPlanes(out float nearClipPlane, out float farClipPlane);
                 int projectionWidth = m_CurrentTexture != null ? m_CurrentTexture.width : 1920;
                 int projectionHeight = m_CurrentTexture != null ? m_CurrentTexture.height : 1440;
-                var projectionMatrix = ArchiveIOUtils.ComputeProjectionMatrix(
+                var projectionMatrix = SfzUtils.ComputeProjectionMatrix(
                     m_CurrentIntrinsics,
                     projectionWidth,
                     projectionHeight,
@@ -642,9 +663,13 @@ namespace SensorFlex.Player.Subsystem
 
             void HandlePlayStateChanged(bool isPlaying)
             {
-                // Reset the timer on unpause so there is no burst of catch-up frames.
                 if (isPlaying)
+                {
+                    // Reset timers on unpause to avoid burst of catch-up frames.
                     nextFrameTime = Time.realtimeSinceStartupAsDouble;
+                    if (IsLiveMode)
+                        m_LiveLastAdvanceTime = Time.realtimeSinceStartupAsDouble;
+                }
             }
 
             async void HandleRestart()

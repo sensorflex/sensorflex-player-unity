@@ -129,7 +129,7 @@ namespace SensorFlex.Player.Library
                 using (var sr = new StreamReader(sessionEntry.Open()))
                     json = sr.ReadToEnd();
 
-                var sfzSession = JsonUtility.FromJson<ArchiveIOUtils.SfzSessionJson>(json);
+                var sfzSession = JsonUtility.FromJson<SfzUtils.SfzSessionJson>(json);
                 meshFile = sfzSession?.attachments?.scene_mesh?.file;
                 if (string.IsNullOrEmpty(meshFile))
                     return null;
@@ -160,7 +160,7 @@ namespace SensorFlex.Player.Library
                 return null;
             }
 
-            var sfzSession = JsonUtility.FromJson<ArchiveIOUtils.SfzSessionJson>(File.ReadAllText(sessionJsonPath));
+            var sfzSession = JsonUtility.FromJson<SfzUtils.SfzSessionJson>(File.ReadAllText(sessionJsonPath));
             string meshFile = sfzSession?.attachments?.scene_mesh?.file;
             if (string.IsNullOrEmpty(meshFile))
                 return null;
@@ -213,7 +213,7 @@ namespace SensorFlex.Player.Library
             var entry = archive.GetEntry(entryPath);
             if (entry == null)
                 throw new InvalidOperationException($"Mesh entry not found: {entryPath}");
-            var bytes = ArchiveIOUtils.ReadEntry(entry);
+            var bytes = SfzUtils.ReadEntry(entry);
             return PlyMeshReader.Parse(bytes, k_ArkitToUnity);
         }
 

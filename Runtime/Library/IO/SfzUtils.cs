@@ -1,4 +1,4 @@
-// ArchiveIOUtils.cs — shared low-level helpers for reading SensorFlex archive data.
+// SfzUtils.cs — shared low-level helpers for reading SensorFlex archive data.
 //
 // This is a pure static utility class; it holds no state. Every other class in the
 // Library namespace that touches ZIP entries, JSON payloads, or coordinate math
@@ -20,45 +20,6 @@
 //                  into an off-centre Unity projection matrix.
 //   DTO types    — SceneMetaJson, CoordSystem, MeshMetaJson, SourceMetaJson mirror
 //                  the JSON schema of meta.json inside the archive.
-//
-// Consumers and data flow:
-//
-//  ┌─────────────────────┐      ┌──────────────────────────────────┐
-//  │  ZipFrameLoader     │      │  WebSocketFrameLoaderBackend     │
-//  │  Backend            │      │                                  │
-//  │  (FrameLoading.cs)  │      │  (FrameLoading.cs)               │
-//  └────────┬────────────┘      └──────────────┬───────────────────┘
-//           │                                  │
-//           │  ReadEntry()                     │  ExtractFloatsFromField()
-//           │  ExtractFloatsFromField()         │  FloatsToMatrix4x4()
-//           │  FloatsToMatrix4x4()              │  ComputeConversionMatrix()
-//           │  ComputeConversionMatrix()        │
-//           └──────────────┬───────────────────┘
-//                          │
-//                          ▼
-//  ┌──────────────────────────────────────────────────────────────────┐
-//  │  «static class»  ArchiveIOUtils                                  │
-//  │  ────────────────────────────────────────────────────────────    │
-//  │  ReadEntry(entry)                  → byte[]                      │
-//  │  ExtractFloatsFromField(json,field) → float[]                    │
-//  │  FloatsToMatrix4x4(float[16])      → Matrix4x4                  │
-//  │  ComputeConversionMatrix(h,fwd)    → Matrix4x4                  │
-//  │  ConvertToUnityPose(src, C, flag)  → Pose                       │
-//  │  ComputeProjectionMatrix(intr,...) → Matrix4x4                  │
-//  │  GetScannedMeshMeta(meta)          → MeshMetaJson               │
-//  │                                                                  │
-//  │  DTO types (serialisable, mirror archive JSON schema):           │
-//  │    SceneMetaJson ──► CoordSystem                                 │
-//  │                  ──► MeshMetaJson   (scanned_mesh / mesh)        │
-//  │                  ──► SourceMetaJson (source)                     │
-//  └──────────────────────────────────────────────────────────────────┘
-//           │
-//           │  SceneMetaJson / MeshMetaJson also consumed by:
-//           ▼
-//  ┌──────────────────────────────────┐
-//  │  ScannedSceneMeshLoadOperation   │
-//  │  (ScannedSceneMeshLoading.cs)    │
-//  └──────────────────────────────────┘
 
 using System;
 using System.IO;
@@ -68,12 +29,7 @@ using UnityEngine;
 
 namespace SensorFlex.Player.Library
 {
-    /// <summary>
-    /// Static helpers for ZIP entry reading, JSON float extraction, matrix packing,
-    /// and coordinate-system conversion. Used by <see cref="FrameLoader"/> and
-    /// any other subsystem that reads from the SensorFlex archive format.
-    /// </summary>
-    internal static class ArchiveIOUtils
+    internal static class SfzUtils
     {
         // ── SFZ session.json DTOs ─────────────────────────────────────────────────
 
@@ -278,6 +234,5 @@ namespace SensorFlex.Player.Library
             m[3, 0] = 0f; m[3, 1] = 0f; m[3, 2] = e;  m[3, 3] = 0f;
             return m;
         }
-
     }
 }
