@@ -2,7 +2,7 @@ using System;
 using UnityEngine;
 using SensorFlex.Player.Subsystem;
 
-namespace SensorFlex.Player
+namespace SensorFlex.Player.Library
 {
     internal enum LiveConnectionState { Disconnected, Connecting, Live }
 

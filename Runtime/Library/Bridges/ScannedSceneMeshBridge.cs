@@ -1,7 +1,7 @@
 using System;
 using UnityEngine;
 
-namespace SensorFlex.Player
+namespace SensorFlex.Player.Library
 {
     internal static class ScannedSceneMeshBridge
     {

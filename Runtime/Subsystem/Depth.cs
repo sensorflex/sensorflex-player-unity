@@ -3,6 +3,7 @@ using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.XR.ARSubsystems;
+using SensorFlex.Player.Library;
 
 namespace SensorFlex.Player.Subsystem
 {
