@@ -35,9 +35,9 @@ namespace SensorFlex.Player
 
         public enum FrameSourceMode
         {
-            // Live = 1 — temporarily disabled; will be re-introduced via ARSensorFlexLiveSession.
-            Sfz = 2,
-            FileIo = 3
+            Sfz = 1,
+            FileIo = 2
+            // Live — temporarily disabled; will be re-introduced via ARSensorFlexLiveSession.
         }
 
         [Header("Frame Source")]
