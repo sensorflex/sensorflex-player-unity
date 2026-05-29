@@ -40,10 +40,9 @@ namespace SensorFlex.Player.Library
         {
             get
             {
-                var loader = SessionStore.FrameLoader;
-                if (loader == null) return 0;
-                int ph    = Mathf.Max(0, loader.PlayHead);
-                int total = loader.TotalFrames;
+                if (!SessionStore.IsActive) return 0;
+                int ph    = Mathf.Max(0, SessionStore.PlayHead);
+                int total = SessionStore.TotalFrames;
                 if (total > 0 && total < int.MaxValue && ph >= total)
                     ph %= total;
                 return ph;
@@ -54,9 +53,8 @@ namespace SensorFlex.Player.Library
         {
             get
             {
-                var loader = SessionStore.FrameLoader;
-                if (loader == null) return 0;
-                int t = loader.TotalFrames;
+                if (!SessionStore.IsActive) return 0;
+                int t = SessionStore.TotalFrames;
                 return t == int.MaxValue ? 0 : t;
             }
         }

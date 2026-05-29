@@ -42,16 +42,16 @@ namespace SensorFlex.Player.Library
 
         public void Tick()
         {
-            var loader = SessionStore.FrameLoader;
-            if (loader?.SessionData == null) return;
+            var sessionData = SessionStore.SessionData;
+            if (sessionData == null) return;
 
-            if (!m_Started && loader.SessionData.Attachments.ContainsKey("scene_mesh"))
+            if (!m_Started && sessionData.Attachments.ContainsKey("scene_mesh"))
             {
-                var bytes = loader.TryConsumeAttachment("scene_mesh");
+                var bytes = SessionStore.TryConsumeAttachment("scene_mesh");
                 if (bytes != null)
                 {
                     m_PendingLoad = ScannedSceneMeshLoadOperation.StartFromPlyBytes(
-                        bytes, k_ArkitToUnity, loader.SessionData.SessionId);
+                        bytes, k_ArkitToUnity, sessionData.SessionId);
                     m_Started = true;
                     Debug.Log("[SF] ScannedMeshLoader: scene_mesh loading started.");
                 }

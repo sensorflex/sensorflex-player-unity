@@ -266,8 +266,7 @@ namespace SensorFlex.Player.Subsystem
                 if (framesReady)
                     return;
 
-                var loader = SessionStore.FrameLoader;
-                if (loader == null || !loader.IsReady)
+                if (!SessionStore.IsReady)
                     return;
 
                 m_SfzDepthTexture = new Texture2D(RawDepthWidth, RawDepthHeight, TextureFormat.RFloat, false);
@@ -281,22 +280,21 @@ namespace SensorFlex.Player.Subsystem
                 if (!framesReady || m_SfzDepthTexture == null)
                     return;
 
-                var loader = SessionStore.FrameLoader;
-                if (loader?.DepthBins == null)
+                if (SessionStore.DepthBins == null)
                     return;
 
-                int playHead = loader.PlayHead;
+                int playHead = SessionStore.PlayHead;
                 if (playHead < 0 || playHead == m_LastSfzPlayHead)
                     return;
 
-                int slot = playHead % loader.BufSize;
+                int slot = playHead % SessionStore.BufSize;
 
-                if (loader.SlotReady == null || !loader.SlotReady[slot])
+                if (SessionStore.SlotReady == null || !SessionStore.SlotReady[slot])
                     return;
-                if (loader.SlotGlobalIdx == null || loader.SlotGlobalIdx[slot] != playHead)
+                if (SessionStore.SlotGlobalIdx == null || SessionStore.SlotGlobalIdx[slot] != playHead)
                     return;
 
-                byte[] depthBytes = loader.DepthBins[slot];
+                byte[] depthBytes = SessionStore.DepthBins[slot];
                 if (depthBytes == null)
                 {
                     m_CurrentDepthTexture = null;
