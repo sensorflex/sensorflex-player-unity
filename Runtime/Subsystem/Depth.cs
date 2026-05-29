@@ -135,16 +135,16 @@ namespace SensorFlex.Player.Subsystem
                 var poses = new NativeArray<Pose>(1, allocator);
                 poses[0] = PoseBridge.HasPose ? PoseBridge.LatestPose : Pose.identity;
 
-                var textureDims = SessionStore.LatestTextureDimensions;
+                var textureDims = SfzSessionStore.LatestTextureDimensions;
                 var fovs = new NativeArray<XRFov>(1, allocator);
-                fovs[0] = BuildFov(SessionStore.LatestIntrinsics, textureDims);
+                fovs[0] = BuildFov(SfzSessionStore.LatestIntrinsics, textureDims);
 
                 frame = new XROcclusionFrame(
                     XROcclusionFrameProperties.Timestamp |
                     XROcclusionFrameProperties.NearFarPlanes |
                     XROcclusionFrameProperties.Poses |
                     XROcclusionFrameProperties.Fovs,
-                    SessionStore.LatestTimestampNs,
+                    SfzSessionStore.LatestTimestampNs,
                     new XRNearFarPlanes(nearClipPlane, farClipPlane),
                     poses,
                     fovs);
@@ -266,7 +266,7 @@ namespace SensorFlex.Player.Subsystem
                 if (framesReady)
                     return;
 
-                if (!SessionStore.IsReady)
+                if (!SfzSessionStore.IsReady)
                     return;
 
                 m_SfzDepthTexture = new Texture2D(RawDepthWidth, RawDepthHeight, TextureFormat.RFloat, false);
@@ -280,21 +280,21 @@ namespace SensorFlex.Player.Subsystem
                 if (!framesReady || m_SfzDepthTexture == null)
                     return;
 
-                if (SessionStore.DepthBins == null)
+                if (SfzSessionStore.DepthBins == null)
                     return;
 
-                int playHead = SessionStore.PlayHead;
+                int playHead = SfzSessionStore.PlayHead;
                 if (playHead < 0 || playHead == m_LastSfzPlayHead)
                     return;
 
-                int slot = playHead % SessionStore.BufSize;
+                int slot = playHead % SfzSessionStore.BufSize;
 
-                if (SessionStore.SlotReady == null || !SessionStore.SlotReady[slot])
+                if (SfzSessionStore.SlotReady == null || !SfzSessionStore.SlotReady[slot])
                     return;
-                if (SessionStore.SlotGlobalIdx == null || SessionStore.SlotGlobalIdx[slot] != playHead)
+                if (SfzSessionStore.SlotGlobalIdx == null || SfzSessionStore.SlotGlobalIdx[slot] != playHead)
                     return;
 
-                byte[] depthBytes = SessionStore.DepthBins[slot];
+                byte[] depthBytes = SfzSessionStore.DepthBins[slot];
                 if (depthBytes == null)
                 {
                     m_CurrentDepthTexture = null;

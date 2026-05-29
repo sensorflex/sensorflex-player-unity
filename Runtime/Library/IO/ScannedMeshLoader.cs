@@ -1,15 +1,15 @@
-// ScannedMeshLoader.cs — scene-mesh attachment orchestrator and background PLY parser.
+// ScannedMeshLoader.cs — background PLY parser and mesh load operation.
 //
-// ScannedMeshLoader.Tick(loader) is called each frame by Camera.cs. It watches for the
-// "scene_mesh" attachment to become available on the FrameLoader, kicks off a background
-// PLY parse via ScannedSceneMeshLoadOperation, polls TryComplete() each frame, and publishes
-// the finished Mesh to ScannedSceneMeshBridge — which ARSensorFlexSceneMesh subscribes to.
+// ScannedSceneMeshLoadOperation wraps a Task-based PLY parse kicked off by
+// SfzSessionStore when the scene_mesh attachment arrives. TryComplete() is
+// polled each frame; on success it returns the Unity Mesh to the caller.
 //
-// PlyMeshReader handles PLY decoding: ASCII and binary-little-endian formats, polygon faces of
-// any valence (fan-triangulated), and the standard vertex attributes x/y/z, nx/ny/nz,
-// red/green/blue/alpha. ApplyCoordinateConversion() transforms positions and normals through
-// the supplied coord-system matrix; if the transformation changes handedness, winding order
-// is flipped to keep normals outward-facing.
+// PlyMeshReader handles PLY decoding: ASCII and binary-little-endian formats,
+// polygon faces of any valence (fan-triangulated), and the standard vertex
+// attributes x/y/z, nx/ny/nz, red/green/blue/alpha. ApplyCoordinateConversion()
+// transforms positions and normals through the supplied coord-system matrix; if
+// the transformation changes handedness, winding order is flipped to keep normals
+// outward-facing.
 
 using System;
 using System.Collections.Generic;
@@ -22,59 +22,6 @@ using UnityEngine.Rendering;
 
 namespace SensorFlex.Player.Library
 {
-    // ── ScannedMeshLoader ─────────────────────────────────────────────────────
-    // Watches a FrameLoader each frame for the "scene_mesh" attachment, kicks off
-    // the PLY parse, and publishes the result to ScannedSceneMeshBridge.
-
-    internal sealed class ScannedMeshLoader
-    {
-        // ScanNet++ PLY meshes are in ARKit space (right-handed, -Z forward).
-        // Flip Z so positions land in the same Unity world space as the camera poses.
-        // TODO: remove once the SFZ exporter writes PLY vertices in Unity world space.
-        static readonly Matrix4x4 k_ArkitToUnity = new Matrix4x4(
-            new Vector4( 1, 0,  0, 0),
-            new Vector4( 0, 1,  0, 0),
-            new Vector4( 0, 0, -1, 0),
-            new Vector4( 0, 0,  0, 1));
-
-        ScannedSceneMeshLoadOperation m_PendingLoad;
-        bool m_Started;
-
-        public void Tick()
-        {
-            var sessionData = SessionStore.SessionData;
-            if (sessionData == null) return;
-
-            if (!m_Started && sessionData.Attachments.ContainsKey("scene_mesh"))
-            {
-                var bytes = SessionStore.TryConsumeAttachment("scene_mesh");
-                if (bytes != null)
-                {
-                    m_PendingLoad = ScannedSceneMeshLoadOperation.StartFromPlyBytes(
-                        bytes, k_ArkitToUnity, sessionData.SessionId);
-                    m_Started = true;
-                    Debug.Log("[SF] ScannedMeshLoader: scene_mesh loading started.");
-                }
-            }
-
-            if (m_PendingLoad == null) return;
-            if (!m_PendingLoad.TryComplete(out var mesh)) return;
-
-            if (mesh != null)
-            {
-                ScannedSceneMeshBridge.SetMesh(mesh, m_PendingLoad.SceneId);
-                Debug.Log($"[SF] Mesh ready: vertices={mesh.vertexCount} triangles={mesh.triangles.Length / 3}");
-            }
-            m_PendingLoad = null;
-        }
-
-        public void Reset()
-        {
-            m_PendingLoad = null;
-            m_Started = false;
-        }
-    }
-
     // ── ScannedSceneMeshLoadOperation ─────────────────────────────────────────
 
     internal sealed class ScannedSceneMeshLoadOperation

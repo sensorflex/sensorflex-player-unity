@@ -66,7 +66,6 @@ namespace SensorFlex.Player.Subsystem
 
             ARSensorFlexSession session;
             int maxFramesToLoad;
-            ScannedMeshLoader m_MeshLoader = new();
 
             // Live mode is temporarily disabled — always false until ARSensorFlexLiveSession is introduced.
             bool IsLiveMode => false;
@@ -159,7 +158,7 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 m_CurrentConfiguration = new XRCameraConfiguration(IntPtr.Zero, new Vector2Int(1920, 1440), framerate: 60);
-                SessionStore.Clear();
+                SfzSessionStore.Clear();
                 m_StartupStage = StartupStage.WarmingUpFrames;
                 nextFrameTime = Time.realtimeSinceStartupAsDouble;
 
@@ -172,11 +171,10 @@ namespace SensorFlex.Player.Subsystem
                 if (!EnsureSessionInitialized())
                     return;
 
-                if (!SessionStore.IsActive)
+                if (!SfzSessionStore.IsActive)
                     return;
 
-                SessionStore.Tick();
-                m_MeshLoader.Tick();
+                SfzSessionStore.Tick();
 
                 // Step-forward only applies in replay mode.
                 if (!IsLiveMode && m_StartupStage == StartupStage.Playing && m_StepForwardPending)
@@ -229,7 +227,7 @@ namespace SensorFlex.Player.Subsystem
                 FramesToWait = Math.Max(1, maxFramesToLoad / 4);
 
                 ScannedSceneMeshBridge.Clear();
-                m_MeshLoader.Reset();
+
                 BeginFrameWarmup();
 
                 nextFrameTime = Time.realtimeSinceStartupAsDouble + frameInterval;
@@ -246,12 +244,12 @@ namespace SensorFlex.Player.Subsystem
                     if (IsLiveMode)
                     {
                         // Live: wait for PreloadFrameCount frames before starting.
-                        if (!SessionStore.IsReady)
+                        if (!SfzSessionStore.IsReady)
                             return;
 
                         if (!m_LoggedPreloadComplete)
                         {
-                            Debug.Log($"[SF] Live preload complete. LatestSeq={SessionStore.LatestGlobalIndex} Preloaded={FramesToWait}");
+                            Debug.Log($"[SF] Live preload complete. LatestSeq={SfzSessionStore.LatestGlobalIndex} Preloaded={FramesToWait}");
                             m_LoggedPreloadComplete = true;
                         }
 
@@ -264,13 +262,13 @@ namespace SensorFlex.Player.Subsystem
 
                         // Start from the latest buffered frame — the preload just ensures
                         // the ring buffer is warm so there are no stalls at startup.
-                        int latest = SessionStore.LatestGlobalIndex;
+                        int latest = SfzSessionStore.LatestGlobalIndex;
                         if (latest >= 0)
                         {
-                            int startSlot = latest % SessionStore.BufSize;
-                            if (SessionStore.SlotReady[startSlot] && SessionStore.SlotGlobalIdx[startSlot] == latest)
+                            int startSlot = latest % SfzSessionStore.BufSize;
+                            if (SfzSessionStore.SlotReady[startSlot] && SfzSessionStore.SlotGlobalIdx[startSlot] == latest)
                             {
-                                SessionStore.PlayHead = latest;
+                                SfzSessionStore.PlayHead = latest;
                                 PlayBufferedSlot(startSlot);
                                 OnFramesReady?.Invoke();
                             }
@@ -281,14 +279,14 @@ namespace SensorFlex.Player.Subsystem
                     // Replay warmup: count ticks until FramesToWait frames have been buffered
                     FramesLoaded++;
 
-                    if (FramesLoaded >= FramesToWait && SessionStore.IsReady)
+                    if (FramesLoaded >= FramesToWait && SfzSessionStore.IsReady)
                     {
                         if (!m_LoggedPreloadComplete)
                         {
                             Debug.Log(
                                 $"[SF] Preload complete ({session.SourceMode}). " +
                                 $"FramesLoaded={FramesLoaded} FramesToWait={FramesToWait} " +
-                                $"TotalFrames={SessionStore.TotalFrames} PlayHead={SessionStore.PlayHead}");
+                                $"TotalFrames={SfzSessionStore.TotalFrames} PlayHead={SfzSessionStore.PlayHead}");
                             m_LoggedPreloadComplete = true;
                         }
 
@@ -299,11 +297,11 @@ namespace SensorFlex.Player.Subsystem
                         m_StartupStage = StartupStage.Playing;
 
                         int firstGlobalFrameIndex = 0;
-                        int firstSlot = firstGlobalFrameIndex % SessionStore.BufSize;
-                        if (!SessionStore.SlotReady[firstSlot] || SessionStore.SlotGlobalIdx[firstSlot] != firstGlobalFrameIndex)
+                        int firstSlot = firstGlobalFrameIndex % SfzSessionStore.BufSize;
+                        if (!SfzSessionStore.SlotReady[firstSlot] || SfzSessionStore.SlotGlobalIdx[firstSlot] != firstGlobalFrameIndex)
                             return;
 
-                        SessionStore.PlayHead = firstGlobalFrameIndex;
+                        SfzSessionStore.PlayHead = firstGlobalFrameIndex;
                         PlayBufferedSlot(firstSlot);
                         OnFramesReady?.Invoke();
                     }
@@ -315,10 +313,10 @@ namespace SensorFlex.Player.Subsystem
 
                 if (IsLiveMode)
                 {
-                    int latest = SessionStore.LatestGlobalIndex;
+                    int latest = SfzSessionStore.LatestGlobalIndex;
                     if (latest < 0) return;
 
-                    int lag = latest - SessionStore.PlayHead;
+                    int lag = latest - SfzSessionStore.PlayHead;
                     if (lag == 0) return; // at live edge, waiting for next frame
 
                     if (lag > k_LiveSnapLag)
@@ -326,10 +324,10 @@ namespace SensorFlex.Player.Subsystem
                         // Too far behind (paused too long or display rate << server rate).
                         // Snap to latest and reset the advance clock.
                         Debug.LogWarning($"[SF] Live lag={lag} exceeded snap threshold — jumping to latest.");
-                        int snapSlot = latest % SessionStore.BufSize;
-                        if (SessionStore.SlotReady[snapSlot] && SessionStore.SlotGlobalIdx[snapSlot] == latest)
+                        int snapSlot = latest % SfzSessionStore.BufSize;
+                        if (SfzSessionStore.SlotReady[snapSlot] && SfzSessionStore.SlotGlobalIdx[snapSlot] == latest)
                         {
-                            SessionStore.PlayHead = latest;
+                            SfzSessionStore.PlayHead = latest;
                             m_LiveLastAdvanceTime = Time.realtimeSinceStartupAsDouble;
                             PlayBufferedSlot(snapSlot);
                             OnFramesReady?.Invoke();
@@ -350,11 +348,11 @@ namespace SensorFlex.Player.Subsystem
                     int lastPlayedSlot = -1;
                     for (int i = 0; i < stepsToAdvance; i++)
                     {
-                        int nextSeqNum   = SessionStore.PlayHead + 1;
-                        int liveNextSlot = nextSeqNum % SessionStore.BufSize;
-                        if (!SessionStore.SlotReady[liveNextSlot] || SessionStore.SlotGlobalIdx[liveNextSlot] != nextSeqNum)
+                        int nextSeqNum   = SfzSessionStore.PlayHead + 1;
+                        int liveNextSlot = nextSeqNum % SfzSessionStore.BufSize;
+                        if (!SfzSessionStore.SlotReady[liveNextSlot] || SfzSessionStore.SlotGlobalIdx[liveNextSlot] != nextSeqNum)
                             break; // frame not decoded yet — stop here
-                        SessionStore.PlayHead = nextSeqNum;
+                        SfzSessionStore.PlayHead = nextSeqNum;
                         lastPlayedSlot    = liveNextSlot;
                     }
 
@@ -367,50 +365,50 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 // Replay: advance one frame at a time
-                int nextGlobalFrameIndex = SessionStore.PlayHead + 1;
-                if (SessionStore.TotalFrames != int.MaxValue && nextGlobalFrameIndex >= SessionStore.TotalFrames)
+                int nextGlobalFrameIndex = SfzSessionStore.PlayHead + 1;
+                if (SfzSessionStore.TotalFrames != int.MaxValue && nextGlobalFrameIndex >= SfzSessionStore.TotalFrames)
                 {
-                    if (session.LoopSequence && SessionStore.TotalFrames > 0)
+                    if (session.LoopSequence && SfzSessionStore.TotalFrames > 0)
                         nextGlobalFrameIndex = 0;
                     else
                         return;
                 }
 
-                int nextSlot = nextGlobalFrameIndex % SessionStore.BufSize;
-                if (!SessionStore.SlotReady[nextSlot] || SessionStore.SlotGlobalIdx[nextSlot] != nextGlobalFrameIndex)
+                int nextSlot = nextGlobalFrameIndex % SfzSessionStore.BufSize;
+                if (!SfzSessionStore.SlotReady[nextSlot] || SfzSessionStore.SlotGlobalIdx[nextSlot] != nextGlobalFrameIndex)
                     return;
 
-                SessionStore.PlayHead = nextGlobalFrameIndex;
+                SfzSessionStore.PlayHead = nextGlobalFrameIndex;
                 PlayBufferedSlot(nextSlot);
                 OnFramesReady?.Invoke();
             }
 
             void PlayBufferedSlot(int slot)
             {
-                SetCurrentTexture(SessionStore.Frames[slot]);
+                SetCurrentTexture(SfzSessionStore.Frames[slot]);
 
                 timestampNs += (long)(frameInterval * 1_000_000_000L);
-                SessionStore.LatestTimestampNs = timestampNs;
+                SfzSessionStore.LatestTimestampNs = timestampNs;
 
-                if (SessionStore.Intrinsics != null &&
+                if (SfzSessionStore.Intrinsics != null &&
                     slot >= 0 &&
-                    slot < SessionStore.Intrinsics.Length &&
-                    SessionStore.Intrinsics[slot] != Vector4.zero)
+                    slot < SfzSessionStore.Intrinsics.Length &&
+                    SfzSessionStore.Intrinsics[slot] != Vector4.zero)
                 {
-                    m_CurrentIntrinsics = SessionStore.Intrinsics[slot];
-                    SessionStore.LatestIntrinsics = m_CurrentIntrinsics;
+                    m_CurrentIntrinsics = SfzSessionStore.Intrinsics[slot];
+                    SfzSessionStore.LatestIntrinsics = m_CurrentIntrinsics;
                 }
 
-                if (SessionStore.Poses != null &&
+                if (SfzSessionStore.Poses != null &&
                     slot >= 0 &&
-                    slot < SessionStore.Poses.Length &&
-                    SessionStore.Poses[slot] != Matrix4x4.zero)
+                    slot < SfzSessionStore.Poses.Length &&
+                    SfzSessionStore.Poses[slot] != Matrix4x4.zero)
                 {
                     PoseBridge.SetUnityPose(
                         SfzUtils.ConvertToUnityPose(
-                            SessionStore.Poses[slot],
-                            SessionStore.CoordConvMatrix,
-                            SessionStore.UseNegativeZForwardOpticalAxis));
+                            SfzSessionStore.Poses[slot],
+                            SfzSessionStore.CoordConvMatrix,
+                            SfzSessionStore.UseNegativeZForwardOpticalAxis));
                 }
             }
 
@@ -430,8 +428,8 @@ namespace SensorFlex.Player.Subsystem
                     return;
                 }
 
-                SessionStore.StartSession(session, maxFramesToLoad, FramesToWait);
-                frameInterval = SessionStore.FrameInterval;
+                SfzSessionStore.StartSession(session, maxFramesToLoad, FramesToWait);
+                frameInterval = SfzSessionStore.FrameInterval;
 
                 Debug.Log($"[SF] Mode={session.SourceMode} FramesToWait={FramesToWait} BufferSize={maxFramesToLoad} FrameInterval={frameInterval:F4}s");
                 if (EnableProgrammaticLoadingOverlay)
@@ -442,7 +440,7 @@ namespace SensorFlex.Player.Subsystem
             {
                 m_CurrentTexture = texture;
                 if (m_CurrentTexture != null)
-                    SessionStore.LatestTextureDimensions = new Vector2Int(m_CurrentTexture.width, m_CurrentTexture.height);
+                    SfzSessionStore.LatestTextureDimensions = new Vector2Int(m_CurrentTexture.width, m_CurrentTexture.height);
 
                 if (!m_LoggedFirstTextureSet && m_CurrentTexture != null)
                 {
@@ -461,7 +459,7 @@ namespace SensorFlex.Player.Subsystem
 
                 if (IsLiveMode)
                 {
-                    int buffered = SessionStore.IsActive ? Math.Max(0, SessionStore.LatestGlobalIndex + 1) : 0;
+                    int buffered = SfzSessionStore.IsActive ? Math.Max(0, SfzSessionStore.LatestGlobalIndex + 1) : 0;
                     string msg = ControlBridge.ConnectionState switch
                     {
                         LiveConnectionState.Connecting => "Live Mode\nConnecting...",
@@ -481,7 +479,7 @@ namespace SensorFlex.Player.Subsystem
             {
                 if (!m_LoggedFirstTryGetFrame)
                 {
-                    Debug.Log($"[SF] TryGetFrame started. Screen={cameraParams.screenWidth}x{cameraParams.screenHeight} Loading={showLoadingScreen} Ready={SessionStore.IsReady}");
+                    Debug.Log($"[SF] TryGetFrame started. Screen={cameraParams.screenWidth}x{cameraParams.screenHeight} Loading={showLoadingScreen} Ready={SfzSessionStore.IsReady}");
                     m_LoggedFirstTryGetFrame = true;
                 }
 
@@ -521,7 +519,7 @@ namespace SensorFlex.Player.Subsystem
                 {
                     if (!m_LoggedEmptyTextureDescriptors)
                     {
-                        Debug.Log($"[SF] GetTextureDescriptors returned empty. Loading={showLoadingScreen} Ready={SessionStore.IsReady}");
+                        Debug.Log($"[SF] GetTextureDescriptors returned empty. Loading={showLoadingScreen} Ready={SfzSessionStore.IsReady}");
                         m_LoggedEmptyTextureDescriptors = true;
                     }
 
@@ -550,7 +548,7 @@ namespace SensorFlex.Player.Subsystem
 
             public override bool TryGetIntrinsics(out XRCameraIntrinsics cameraIntrinsics)
             {
-                SessionStore.LatestIntrinsics = m_CurrentIntrinsics;
+                SfzSessionStore.LatestIntrinsics = m_CurrentIntrinsics;
                 cameraIntrinsics = new XRCameraIntrinsics(
                     new Vector2(m_CurrentIntrinsics.x, m_CurrentIntrinsics.y),
                     new Vector2(m_CurrentIntrinsics.z, m_CurrentIntrinsics.w),
@@ -595,9 +593,9 @@ namespace SensorFlex.Player.Subsystem
             async void HandleRestart()
             {
                 m_StepForwardPending = false;
-                await SessionStore.StopSessionAsync();
+                await SfzSessionStore.StopSessionAsync();
                 ScannedSceneMeshBridge.Clear();
-                m_MeshLoader.Reset();
+
                 BeginFrameWarmup();
             }
 
@@ -605,15 +603,15 @@ namespace SensorFlex.Player.Subsystem
             // Only called when paused, in response to ControlBridge.OnStepForward.
             void ExecuteBufferedStep()
             {
-                int next = SessionStore.PlayHead + 1;
-                if (SessionStore.TotalFrames != int.MaxValue && next >= SessionStore.TotalFrames)
+                int next = SfzSessionStore.PlayHead + 1;
+                if (SfzSessionStore.TotalFrames != int.MaxValue && next >= SfzSessionStore.TotalFrames)
                     return;
 
-                int slot = next % SessionStore.BufSize;
-                if (!SessionStore.SlotReady[slot] || SessionStore.SlotGlobalIdx[slot] != next)
+                int slot = next % SfzSessionStore.BufSize;
+                if (!SfzSessionStore.SlotReady[slot] || SfzSessionStore.SlotGlobalIdx[slot] != next)
                     return;
 
-                SessionStore.PlayHead = next;
+                SfzSessionStore.PlayHead = next;
                 PlayBufferedSlot(slot);
                 OnFramesReady?.Invoke();
             }
@@ -623,7 +621,7 @@ namespace SensorFlex.Player.Subsystem
                 UnsubscribeControlBridge();
                 ControlBridge.Clear();
 
-                await SessionStore.StopSessionAsync();
+                await SfzSessionStore.StopSessionAsync();
                 session = null;
 
                 showLoadingScreen = false;
