@@ -26,10 +26,10 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
   Optional UI/scripting bridge that exposes play, pause, step-forward, restart, speed control, and depth visualisation to host applications through `ControlBridge`.
 
 - `Runtime/Subsystem/Camera.cs`
-  Owns playback timing and exposes camera frames to AR Foundation. Creates a `FrameLoader`, calls `FrameLoader.Tick()` and `ScannedMeshLoader.Tick()` once per frame, advances the ring-buffer playhead, updates intrinsics and projection matrix from per-frame data, and pushes poses into `PoseBridge`.
+  Owns playback timing and exposes camera frames to AR Foundation. Calls `SfzSessionStore.StartSession()` on warmup and `SfzSessionStore.Tick()` once per Unity frame, advances the ring-buffer playhead, updates intrinsics and projection matrix from per-frame data, and pushes poses into `PoseBridge`. No direct IO imports — all session data is read through `SfzSessionStore` proxy properties.
 
 - `Runtime/Subsystem/Depth.cs`
-  Exposes environment depth through `XROcclusionSubsystem`. Reads raw depth bytes from the `FrameLoader` ring buffer each frame (all three source modes supported). Synchronized to camera frame progression via `OnFramesReady`.
+  Exposes environment depth through `XROcclusionSubsystem`. Reads raw depth bytes and ring-buffer state from `SfzSessionStore` each frame. Synchronized to camera frame progression via `OnFramesReady`.
 
 - `Runtime/Subsystem/Session.cs`
   Provides a minimal `XRSessionSubsystem` implementation so the package can participate in the XR lifecycle.
@@ -38,22 +38,25 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
   Static event bridge carrying camera poses from `CameraSubsystem` to scene components.
 
 - `Runtime/Library/Bridges/ScannedSceneMeshBridge.cs`
-  Static event bridge carrying the loaded `Mesh` from `ScannedMeshLoader` to scene components. Fires `OnMeshReady` once per session; `ARSensorFlexSceneMesh` subscribes to instantiate the mesh.
+  Static event bridge carrying the loaded `Mesh` from `SfzSessionStore` to scene components. Fires `OnMeshReady` once per session; `ARSensorFlexSceneMesh` subscribes to instantiate the mesh.
 
 - `Runtime/Library/Bridges/ControlBridge.cs`
-  Static event bridge for playback control commands (play/pause/step/restart/speed). `ARSensorFlexReplayController` drives it; `CameraSubsystem` reacts.
+  Static event bridge for playback control commands (play/pause/step/restart/speed). `ARSensorFlexReplayController` drives it; `CameraSubsystem` reacts. Reads playhead position and total frame count from `SfzSessionStore`.
+
+- `Runtime/Library/Store/SfzSessionStore.cs`
+  Single source of truth for SFZ/FileIo session lifecycle and data access. `CameraSubsystem` drives it through `StartSession()` / `Tick()` / `StopSessionAsync()`; all other subsystems read state through typed proxy properties. Contains private nested types for all SFZ IO:
+  - `SfzFileBackend` — ZIP archive source; streams frames on a background thread (`SF-SFZ`)
+  - `FileIoBackend` — loose-file source; identical streaming logic (`SF-FileIo`)
+  - `ScannedMeshLoaderImpl` — polls for `scene_mesh` attachment, kicks off PLY parse, publishes to `ScannedSceneMeshBridge`
 
 - `Runtime/Library/IO/FrameLoader.cs`
-  Session lifecycle coordinator and data model. Owned by `CameraSubsystem`. Drives a four-state machine (`Idle → Waiting → Loading → Ready`) through `Tick()` called once per Unity frame. Defines `ISessionBackend` (three-phase backend contract), the session data model (`SfzSessionData`, `SfzTrackInfo`, `SfzAttachmentInfo`), and `IBackendState`/`BackendState` — the ring-buffer state allocated by each backend in `StartLoading()`. Exposes `TryConsumeAttachment()` for single-consume delivery of raw attachment bytes to `ScannedMeshLoader`.
-
-- `Runtime/Library/IO/SfzBackends.cs`
-  `ISessionBackend` implementations for ZIP-archive (`SfzFrameLoaderBackend`) and loose-file (`FileIoFrameLoaderBackend`) sessions. Both extend `SfzBackendBase` which streams frames on a dedicated background thread into the ring buffer, throttled by `PlayHead`.
+  Shared session contracts. Defines `IBackendState` / `BackendState` (ring-buffer state), `ISessionBackend` (three-phase backend contract used by `LiveWebSocketBackend`), `SessionLoadState` enum, and the session data model (`SfzSessionData`, `SfzTrackInfo`, `SfzAttachmentInfo`).
 
 - `Runtime/Library/IO/LiveWebSocketBackend.cs`
-  `ISessionBackend` implementation for live WebSocket streaming. Connects asynchronously with auto-reconnect, receives `session.json` as a text message, `SFAT` binary packets for attachments, and `SFWP` binary frame packets. Holds frame drain until all expected attachments have been consumed by `FrameLoader`.
+  `ISessionBackend` implementation for live WebSocket streaming. Connects asynchronously with auto-reconnect, receives `session.json` as a text message, `SFAT` binary packets for attachments, and `SFWP` binary frame packets. Will be promoted to a full `LiveSessionStore` in a future iteration.
 
 - `Runtime/Library/IO/ScannedMeshLoader.cs`
-  Scene-mesh attachment orchestrator and background PLY parser. `ScannedMeshLoader.Tick(loader)` is called each frame by `CameraSubsystem`; it watches for the `scene_mesh` attachment via `FrameLoader.TryConsumeAttachment()`, kicks off `ScannedSceneMeshLoadOperation.StartFromPlyBytes()` once bytes arrive, polls `TryComplete()` each frame, and publishes the finished `Mesh` to `ScannedSceneMeshBridge`. Parses ASCII and binary-little-endian PLY on a background `Task`; the `Mesh` object is built on the main thread.
+  Background PLY parser. `ScannedSceneMeshLoadOperation.StartFromPlyBytes()` is called by `SfzSessionStore`; it parses ASCII and binary-little-endian PLY on a background `Task` and builds the `Mesh` on the main thread via `TryComplete()`.
 
 - `Runtime/Library/IO/SfzUtils.cs`
   Stateless helpers: ZIP entry reads, JSON float extraction, matrix construction, pose conversion (`SfzPoseToMatrix4x4`, `ConvertToUnityPose`), intrinsics extraction, and projection matrix construction.
@@ -63,12 +66,12 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
 1. Unity XR Management initializes `Loader`.
 2. `Loader` creates and starts the camera, session, and occlusion subsystems.
 3. `CameraSubsystem.CameraDataProvider` resolves the active `ARSensorFlexSession` for config.
-4. Camera creates a `FrameLoader` and calls `Start()`, which opens the appropriate `ISessionBackend`.
-5. Each Unity frame, Camera calls `FrameLoader.Tick()` and `ScannedMeshLoader.Tick()`:
-   - **Waiting** — polls `TryGetSessionJson()` until session metadata arrives, then calls `StartLoading()`.
-   - **Loading** — calls `DrainMainThreadWork()` (GPU uploads); transitions to **Ready** once enough frames are buffered. In parallel, `ScannedMeshLoader.Tick()` polls `TryConsumeAttachment("scene_mesh")` and starts the PLY parse when bytes are available.
-   - **Ready** — continues draining; `ScannedMeshLoader` continues polling until the parse completes.
-6. The selected backend fills the ring buffer with textures, pose matrices, intrinsics, and depth bytes. All three source modes (SFZ, FileIo, Live) follow the same contract.
+4. Camera calls `SfzSessionStore.StartSession()`, which opens the appropriate private backend (`SfzFileBackend` or `FileIoBackend`).
+5. Each Unity frame, Camera calls `SfzSessionStore.Tick()`:
+   - **Waiting** — polls `TryGetSessionJson()` until session metadata arrives, then calls `StartLoading()` on the backend.
+   - **Loading** — calls `DrainMainThreadWork()` (GPU uploads); transitions to **Ready** once enough frames are buffered. In parallel, `ScannedMeshLoaderImpl` polls `TryConsumeAttachment("scene_mesh")` and starts the PLY parse when bytes are available.
+   - **Ready** — continues draining; `ScannedMeshLoaderImpl` continues polling until the parse completes.
+6. The active backend fills the ring buffer with textures, pose matrices, intrinsics, and depth bytes on a background thread.
 7. The camera provider advances the ring-buffer playhead and publishes data through **two parallel paths**:
 
    **Path 1 — AR Foundation subsystem APIs:**
@@ -76,7 +79,7 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
    - Per-frame intrinsics → `TryGetIntrinsics`
    - Projection matrix derived from intrinsics → AR Foundation camera APIs
    - Frame timestamp and camera state → AR Foundation camera APIs
-   - Environment depth bytes → `XROcclusionSubsystem` (all source modes)
+   - Environment depth bytes → `XROcclusionSubsystem`
    - Session tracking state → `XRSessionSubsystem`
 
    **Path 2 — Bridge APIs:**
@@ -102,38 +105,37 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
   │  └─────────────────┘       │ creates                      │             │
   │                    ┌───────┴──────────┐                   │             │
   │                    ▼                  ▼                   ▼             │
-  │          ┌──────────────────────────┐  ┌──────────┐  ┌───────────────┐ │
-  │          │  CameraSubsystem         │  │ Session  │  │  Occlusion    │ │
-  │          │                          │  │Subsystem │  │  Subsystem    │ │
-  │          │  ┌──────────────────┐    │  │ (stub)   │  └──────┬────────┘ │
-  │          │  │   FrameLoader    │    │  └──────────┘         │ reads    │
-  │          │  │   Waiting        ├────┼───────────────────────┘ ring buf │
-  │          │  │   Loading        │    │                                   │
-  │          │  │   Ready          │    │                                   │
-  │          │  │                  │    │                                   │
-  │          │  │  ISessionBackend │    │                                   │
-  │          │  │  ┌─────────────┐ │    │                                   │
-  │          │  │  │ SFZ / ZIP   │ │    │                                   │
-  │          │  │  │ FileIo      │◄┼────┼── SfzUtils (helpers)              │
-  │          │  │  │ Live / WS   │ │    │                                   │
-  │          │  │  └──────┬──────┘ │    │                                   │
-  │          │  │    BackendState  │    │                                   │
-  │          │  └──────────────────┘    │                                   │
-  │          │       │ TryConsumeAttachment                                 │
-  │          │       ▼                  │                                   │
-  │          │  ┌──────────────────┐    │                                   │
-  │          │  │ ScannedMesh      │    │                                   │
-  │          │  │ Loader           │    │                                   │
-  │          │  │ Tick(loader)     │    │                                   │
-  │          │  └──────────────────┘    │                                   │
-  │          └───────────┬──────────────┘                                   │
-  │                      │                                                  │
-  └──────────────────────┼──────────────────────────────────────────────────┘
-                         │ publishes via two paths
-                         │
-        ┌────────────────┴───────────────┐
-        │                                │
-        ▼                                ▼
+  │          ┌──────────────────┐  ┌──────────┐  ┌───────────────────────┐ │
+  │          │  CameraSubsystem │  │ Session  │  │  OcclusionSubsystem   │ │
+  │          │  timing + AR     │  │Subsystem │  │                       │ │
+  │          │  Foundation APIs │  │ (stub)   │  └──────────┬────────────┘ │
+  │          └────────┬─────────┘  └──────────┘             │              │
+  │                   │ StartSession/Tick/Stop               │ reads        │
+  │                   │                                      │ depth buf    │
+  │                   └──────────────┬───────────────────────┘              │
+  │                                  ▼                                      │
+  │          ┌────────────────────────────────────────────────────────────┐ │
+  │          │  SfzSessionStore                    (Library/Store/)       │ │
+  │          │                                                             │ │
+  │          │  Idle ──► Waiting ──► Loading ──► Ready                    │ │
+  │          │                                                             │ │
+  │          │  ┌──────────────────────────────────────────────────────┐  │ │
+  │          │  │  SfzFileBackend / FileIoBackend  (private nested)     │  │ │
+  │          │  │  background thread · ring buffer · GPU upload   ◄─────┼──┼─── SfzUtils
+  │          │  └──────────────────────────────────────────────────────┘  │ │
+  │          │                                                             │ │
+  │          │  ┌──────────────────────────────────────────────────────┐  │ │
+  │          │  │  ScannedMeshLoaderImpl              (private nested)  │  │ │
+  │          │  │  polls scene_mesh · drives PLY parse                  │  │ │
+  │          │  └──────────────────────────────────────────────────────┘  │ │
+  │          └────────────────────────────────────────────────────────────┘ │
+  │                              │                                           │
+  └──────────────────────────────┼───────────────────────────────────────────┘
+                                 │ publishes via two paths
+                                 │
+        ┌────────────────────────┴───────────────┐
+        │                                        │
+        ▼                                        ▼
   ╔══════════════════════════════╗  ╔═══════════════════════════════════════╗
   ║  PATH 1: AR Foundation       ║  ║  PATH 2: Bridges                     ║
   ║  Subsystem APIs              ║  ║                                       ║
@@ -146,18 +148,18 @@ This package implements a lightweight XR provider stack for replaying SensorFlex
   ║                              ║  ║  ARSensorFlexSession                  ║
   ║  XROcclusionSubsystem        ║  ║  (subscribes OnPoseUpdated)           ║
   ║  • depth texture             ║  ║  drives XROrigin camera rig           ║
-  ║    (all source modes)        ║  ║                                       ║
-  ║                              ║  ║  ScannedSceneMeshBridge               ║
-  ║  XRSessionSubsystem          ║  ║  ─────────────────────────────────   ║
-  ║  • session tracking state    ║  ║  ScannedMeshLoader calls              ║
-  ║                              ║  ║  SetMesh() once on load               ║
-  ║         │                    ║  ║         │                             ║
-  ║         ▼                    ║  ║         ▼                             ║
-  ║  AR Foundation managers      ║  ║  ARSensorFlexSceneMesh                ║
-  ║  ARCameraManager             ║  ║  (subscribes OnMeshReady)             ║
-  ║  AROcclusionManager          ║  ║  instantiates MeshFilter /            ║
-  ║  Standard AR app code        ║  ║  MeshRenderer in scene                ║
-  ╚══════════════════════════════╝  ╚═══════════════════════════════════════╝
+  ║                              ║  ║                                       ║
+  ║  XRSessionSubsystem          ║  ║  ScannedSceneMeshBridge               ║
+  ║  • session tracking state    ║  ║  ─────────────────────────────────   ║
+  ║                              ║  ║  SfzSessionStore calls                ║
+  ║         │                    ║  ║  SetMesh() once on load               ║
+  ║         ▼                    ║  ║         │                             ║
+  ║  AR Foundation managers      ║  ║         ▼                             ║
+  ║  ARCameraManager             ║  ║  ARSensorFlexSceneMesh                ║
+  ║  AROcclusionManager          ║  ║  (subscribes OnMeshReady)             ║
+  ║  Standard AR app code        ║  ║  instantiates MeshFilter /            ║
+  ╚══════════════════════════════╝  ║  MeshRenderer in scene                ║
+                                    ╚═══════════════════════════════════════╝
 ```
 
 ## Host Application Integration
@@ -178,40 +180,36 @@ There are two outward-facing publication paths:
 - **`PoseBridge` and `ScannedSceneMeshBridge` as direct APIs**
   Both bridges are public static APIs and can be subscribed to by arbitrary host code without using the package's scene components, for advanced or custom integration.
 
-## Backend Responsibilities
+## SfzSessionStore Internals
 
-All three source modes implement the same `ISessionBackend` three-phase contract:
+`SfzSessionStore` owns the full SFZ/FileIo session lifecycle. `CameraSubsystem` is the only writer; all other subsystems are read-only consumers of its proxy properties.
 
-1. **`Open(session)`** — validate and open the data source.
-2. **`TryGetSessionJson(out json)`** — polled each `Tick()` until session metadata is available. File backends return immediately; the Live backend returns `false` until the server sends JSON.
-3. **`StartLoading(data, bufSize, framesToWait)`** — allocate the ring buffer and begin streaming.
-
-### SFZ (ZIP archive)
+### SFZ (ZIP archive) — `SfzFileBackend`
 
 - Validates the archive path relative to `StreamingAssets`
 - Reads `session/session.json` from the archive on first poll
 - Streams frames on a dedicated background thread (`SF-SFZ`); sleeps when the ring buffer is full
 - `TryGetAttachmentBytes()` opens the archive once to read the attachment file
-- Supports loop playback across multiple passes (`BeginLoadPass`/`EndLoadPass` keep the archive open for the full pass)
+- Keeps the archive open across the full loop pass (`BeginLoadPass`/`EndLoadPass`) so the central directory is parsed only once per iteration
 
-### FileIo (loose files)
+### FileIo (loose files) — `FileIoBackend`
 
 - Validates the session directory path relative to `StreamingAssets`
 - Reads `session.json` from the directory on first poll
 - Identical streaming logic to SFZ via `SfzBackendBase`
 - `TryGetAttachmentBytes()` reads the attachment file directly from disk
 
-### Live (WebSocket)
+### Live (WebSocket) — `LiveWebSocketBackend`
 
+- Separate file (`LiveWebSocketBackend.cs`), implements `ISessionBackend`; will become `LiveSessionStore` in a future iteration
 - Connects asynchronously to `webSocketUrl` with auto-reconnect (up to 5 attempts)
 - Sends a `hello` handshake after connect; server replies with session JSON
 - Receives `SFAT` binary packets (attachments) and `SFWP` binary frame packets
-- Frame drain is gated: `DrainMainThreadWork()` holds until all expected attachments have been consumed by `ScannedMeshLoader.Tick()`
-- Publishes RGB, optional depth, pose, and intrinsics per frame from packet metadata JSON
+- Frame drain is gated: `DrainMainThreadWork()` holds until all expected attachments have been consumed
 
 ## Session State Machine
 
-`FrameLoader.Tick()` drives this state machine once per Unity frame. `ScannedMeshLoader.Tick()` is called alongside it by `CameraSubsystem` and is responsible for attachment polling and mesh publishing independently of the frame state machine.
+`SfzSessionStore.Tick()` drives this state machine once per Unity frame. `ScannedMeshLoaderImpl` runs inside the same `Tick()` call and is responsible for attachment polling and mesh publishing independently of the frame state machine.
 
 ```
   Idle ──► Waiting ──► Loading ──► Ready
@@ -220,9 +218,9 @@ All three source modes implement the same `ISessionBackend` three-phase contract
      polls each frame   polls each frame
 ```
 
-- **Waiting** — `TryGetSessionJson()` is polled; on success, session metadata is parsed and `StartLoading()` is called.
-- **Loading** — GPU uploads drain each frame; transitions to **Ready** when `BackendState.IsReady` is true (enough frames buffered). Meanwhile, `ScannedMeshLoader.Tick()` watches for `scene_mesh` bytes and starts the PLY parse independently.
-- **Ready** — continues draining; `ScannedMeshLoader` continues polling until parse completes.
+- **Waiting** — `TryGetSessionJson()` is polled; on success, session metadata is parsed and `StartLoading()` is called on the backend.
+- **Loading** — GPU uploads drain each frame; transitions to **Ready** when `BackendState.IsReady` is true (enough frames buffered). Meanwhile, `ScannedMeshLoaderImpl` watches for `scene_mesh` bytes and starts the PLY parse.
+- **Ready** — continues draining; `ScannedMeshLoaderImpl` continues polling until parse completes.
 
 ## Runtime Threading Model
 
@@ -235,5 +233,6 @@ All three source modes implement the same `ISessionBackend` three-phase contract
 ## Current Design Constraints
 
 - `PoseBridge` and `ScannedSceneMeshBridge` are package-global static APIs; they are not session-isolated.
-- New data types beyond color/depth/pose/intrinsics should be modelled as `SfzTrackInfo` entries or `SfzAttachmentInfo` entries in `SfzSessionData`; `ScannedMeshLoader.Tick()` is the extension point for new attachment handlers — add a new `if (name == "…")` branch there.
+- `SfzSessionStore` is also a static (package-global) store. A future `LiveSessionStore` will share the same public surface and the two will be selected at session startup.
+- New data types beyond color/depth/pose/intrinsics should be modelled as `SfzTrackInfo` entries or `SfzAttachmentInfo` entries in `SfzSessionData`; `ScannedMeshLoaderImpl` inside `SfzSessionStore` is the extension point for new attachment handlers — add a new branch in its `Tick()`.
 - The `SfzUtils.SfzSessionJson` JSON schema is the authoritative definition of what `session.json` may contain.
