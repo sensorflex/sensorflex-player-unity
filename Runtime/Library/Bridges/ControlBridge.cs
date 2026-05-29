@@ -40,7 +40,7 @@ namespace SensorFlex.Player.Library
         {
             get
             {
-                var loader = CameraSubsystem.CameraDataProvider.ActiveSession;
+                var loader = SessionStore.FrameLoader;
                 if (loader == null) return 0;
                 int ph    = Mathf.Max(0, loader.PlayHead);
                 int total = loader.TotalFrames;
@@ -54,7 +54,7 @@ namespace SensorFlex.Player.Library
         {
             get
             {
-                var loader = CameraSubsystem.CameraDataProvider.ActiveSession;
+                var loader = SessionStore.FrameLoader;
                 if (loader == null) return 0;
                 int t = loader.TotalFrames;
                 return t == int.MaxValue ? 0 : t;

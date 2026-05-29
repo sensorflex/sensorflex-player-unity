@@ -40,8 +40,9 @@ namespace SensorFlex.Player.Library
         ScannedSceneMeshLoadOperation m_PendingLoad;
         bool m_Started;
 
-        public void Tick(FrameLoader loader)
+        public void Tick()
         {
+            var loader = SessionStore.FrameLoader;
             if (loader?.SessionData == null) return;
 
             if (!m_Started && loader.SessionData.Attachments.ContainsKey("scene_mesh"))

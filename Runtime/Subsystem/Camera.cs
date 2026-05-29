@@ -49,11 +49,6 @@ namespace SensorFlex.Player.Subsystem
 
             public static event Action OnFramesReady;
 
-            internal static FrameLoader ActiveSession { get; private set; }
-            internal static long LatestTimestampNs { get; private set; }
-            internal static Vector4 LatestIntrinsics { get; private set; } = new(935.3f, 935.3f, 960f, 720f);
-            internal static Vector2Int LatestTextureDimensions { get; private set; } = new(1920, 1440);
-
             double nextFrameTime;
             double frameInterval = 1.0 / 30.0;
             long timestampNs = 0;
@@ -165,9 +160,7 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 m_CurrentConfiguration = new XRCameraConfiguration(IntPtr.Zero, new Vector2Int(1920, 1440), framerate: 60);
-                LatestTimestampNs = 0;
-                LatestIntrinsics = m_CurrentIntrinsics;
-                LatestTextureDimensions = new Vector2Int(1920, 1440);
+                SessionStore.Clear();
                 m_StartupStage = StartupStage.WarmingUpFrames;
                 nextFrameTime = Time.realtimeSinceStartupAsDouble;
 
@@ -184,7 +177,7 @@ namespace SensorFlex.Player.Subsystem
                     return;
 
                 m_FrameLoader.Tick();
-                m_MeshLoader.Tick(m_FrameLoader);
+                m_MeshLoader.Tick();
 
                 // Step-forward only applies in replay mode.
                 if (!IsLiveMode && m_StartupStage == StartupStage.Playing && m_StepForwardPending)
@@ -398,7 +391,7 @@ namespace SensorFlex.Player.Subsystem
                 SetCurrentTexture(m_FrameLoader.Frames[slot]);
 
                 timestampNs += (long)(frameInterval * 1_000_000_000L);
-                LatestTimestampNs = timestampNs;
+                SessionStore.LatestTimestampNs = timestampNs;
 
                 if (m_FrameLoader.Intrinsics != null &&
                     slot >= 0 &&
@@ -406,7 +399,7 @@ namespace SensorFlex.Player.Subsystem
                     m_FrameLoader.Intrinsics[slot] != Vector4.zero)
                 {
                     m_CurrentIntrinsics = m_FrameLoader.Intrinsics[slot];
-                    LatestIntrinsics = m_CurrentIntrinsics;
+                    SessionStore.LatestIntrinsics = m_CurrentIntrinsics;
                 }
 
                 if (m_FrameLoader.Poses != null &&
@@ -440,7 +433,7 @@ namespace SensorFlex.Player.Subsystem
 
                 m_FrameLoader = new FrameLoader();
                 m_FrameLoader.Start(session, maxFramesToLoad, FramesToWait);
-                ActiveSession = m_FrameLoader;
+                SessionStore.Set(m_FrameLoader);
 
                 frameInterval = m_FrameLoader.FrameInterval;
 
@@ -453,7 +446,7 @@ namespace SensorFlex.Player.Subsystem
             {
                 m_CurrentTexture = texture;
                 if (m_CurrentTexture != null)
-                    LatestTextureDimensions = new Vector2Int(m_CurrentTexture.width, m_CurrentTexture.height);
+                    SessionStore.LatestTextureDimensions = new Vector2Int(m_CurrentTexture.width, m_CurrentTexture.height);
 
                 if (!m_LoggedFirstTextureSet && m_CurrentTexture != null)
                 {
@@ -561,7 +554,7 @@ namespace SensorFlex.Player.Subsystem
 
             public override bool TryGetIntrinsics(out XRCameraIntrinsics cameraIntrinsics)
             {
-                LatestIntrinsics = m_CurrentIntrinsics;
+                SessionStore.LatestIntrinsics = m_CurrentIntrinsics;
                 cameraIntrinsics = new XRCameraIntrinsics(
                     new Vector2(m_CurrentIntrinsics.x, m_CurrentIntrinsics.y),
                     new Vector2(m_CurrentIntrinsics.z, m_CurrentIntrinsics.w),
@@ -611,7 +604,7 @@ namespace SensorFlex.Player.Subsystem
                 {
                     var old = m_FrameLoader;
                     m_FrameLoader = null;
-                    ActiveSession   = null;
+                    SessionStore.Clear();
                     await old.StopAsync();
                     old.DestroyTextures();
                 }
@@ -643,7 +636,7 @@ namespace SensorFlex.Player.Subsystem
                 UnsubscribeControlBridge();
                 ControlBridge.Clear();
 
-                ActiveSession = null;
+                SessionStore.Clear();
                 session = null;
 
                 if (m_FrameLoader != null)

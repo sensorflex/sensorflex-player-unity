@@ -135,16 +135,16 @@ namespace SensorFlex.Player.Subsystem
                 var poses = new NativeArray<Pose>(1, allocator);
                 poses[0] = PoseBridge.HasPose ? PoseBridge.LatestPose : Pose.identity;
 
-                var textureDims = CameraSubsystem.CameraDataProvider.LatestTextureDimensions;
+                var textureDims = SessionStore.LatestTextureDimensions;
                 var fovs = new NativeArray<XRFov>(1, allocator);
-                fovs[0] = BuildFov(CameraSubsystem.CameraDataProvider.LatestIntrinsics, textureDims);
+                fovs[0] = BuildFov(SessionStore.LatestIntrinsics, textureDims);
 
                 frame = new XROcclusionFrame(
                     XROcclusionFrameProperties.Timestamp |
                     XROcclusionFrameProperties.NearFarPlanes |
                     XROcclusionFrameProperties.Poses |
                     XROcclusionFrameProperties.Fovs,
-                    CameraSubsystem.CameraDataProvider.LatestTimestampNs,
+                    SessionStore.LatestTimestampNs,
                     new XRNearFarPlanes(nearClipPlane, farClipPlane),
                     poses,
                     fovs);
@@ -266,7 +266,7 @@ namespace SensorFlex.Player.Subsystem
                 if (framesReady)
                     return;
 
-                var loader = CameraSubsystem.CameraDataProvider.ActiveSession;
+                var loader = SessionStore.FrameLoader;
                 if (loader == null || !loader.IsReady)
                     return;
 
@@ -281,7 +281,7 @@ namespace SensorFlex.Player.Subsystem
                 if (!framesReady || m_SfzDepthTexture == null)
                     return;
 
-                var loader = CameraSubsystem.CameraDataProvider.ActiveSession;
+                var loader = SessionStore.FrameLoader;
                 if (loader?.DepthBins == null)
                     return;
 
