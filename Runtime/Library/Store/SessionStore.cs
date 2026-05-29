@@ -21,9 +21,9 @@ namespace SensorFlex.Player.Library
 
         // ── Per-frame data (written by CameraSubsystem each frame) ────────────
 
-        internal static long       LatestTimestampNs      { get; internal set; }
-        internal static Vector4    LatestIntrinsics       { get; internal set; } = new(935.3f, 935.3f, 960f, 720f);
-        internal static Vector2Int LatestTextureDimensions { get; internal set; } = new(1920, 1440);
+        internal static long       LatestTimestampNs       = 0;
+        internal static Vector4    LatestIntrinsics        = new(935.3f, 935.3f, 960f, 720f);
+        internal static Vector2Int LatestTextureDimensions = new(1920, 1440);
 
         // ── Lifecycle (called by CameraSubsystem) ─────────────────────────────
 
@@ -34,9 +34,9 @@ namespace SensorFlex.Player.Library
 
         internal static void Clear()
         {
-            FrameLoader = null;
-            LatestTimestampNs = 0;
-            LatestIntrinsics = new Vector4(935.3f, 935.3f, 960f, 720f);
+            FrameLoader             = null;
+            LatestTimestampNs       = 0;
+            LatestIntrinsics        = new Vector4(935.3f, 935.3f, 960f, 720f);
             LatestTextureDimensions = new Vector2Int(1920, 1440);
         }
     }
