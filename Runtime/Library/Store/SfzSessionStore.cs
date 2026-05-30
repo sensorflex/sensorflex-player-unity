@@ -12,6 +12,10 @@
 //   SfzTrackInfo                  — per-track metadata (name, sample interval, record count)
 //   SfzAttachmentInfo             — per-attachment metadata (name, file, format)
 //   SfzSessionData                — parsed session.json aggregate
+//   SfzSessionJson / DTOs         — session.json deserialization types
+//   SfzPoseToMatrix4x4            — SFZ pose record → Matrix4x4
+//   SfzIntrinsicsToVector4        — SFZ intrinsics record → Vector4
+//   ReadZipEntry                  — drains a ZipArchiveEntry into byte[]
 //   SfzBackendBase                — ring-buffer streaming on a background thread
 //   SfzFileBackend                — SFZ (ZIP archive) source
 //   FileIoBackend                 — FileIo (loose files) source
@@ -175,7 +179,7 @@ namespace SensorFlex.Player.Library
             data = null;
             if (string.IsNullOrEmpty(json)) return false;
 
-            var raw = JsonUtility.FromJson<SfzUtils.SfzSessionJson>(json);
+            var raw = JsonUtility.FromJson<SfzSessionJson>(json);
             if (raw == null || string.IsNullOrEmpty(raw.version)) return false;
 
             var tracks = new Dictionary<string, SfzTrackInfo>();
@@ -358,19 +362,99 @@ namespace SensorFlex.Player.Library
             public string SessionId { get; }
             public IReadOnlyDictionary<string, SfzTrackInfo>       Tracks      { get; }
             public IReadOnlyDictionary<string, SfzAttachmentInfo>  Attachments { get; }
-            internal SfzUtils.SfzFrameRecordJson[] FrameRecords { get; }
+            internal SfzFrameRecordJson[] FrameRecords { get; }
 
             internal SfzSessionData(
                 string sessionId,
                 IReadOnlyDictionary<string, SfzTrackInfo>      tracks,
                 IReadOnlyDictionary<string, SfzAttachmentInfo> attachments,
-                SfzUtils.SfzFrameRecordJson[]                  frameRecords)
+                SfzFrameRecordJson[]                  frameRecords)
             {
                 SessionId    = sessionId ?? "session";
                 Tracks       = tracks      ?? new Dictionary<string, SfzTrackInfo>();
                 Attachments  = attachments ?? new Dictionary<string, SfzAttachmentInfo>();
                 FrameRecords = frameRecords;
             }
+        }
+
+        // ── Nested: session.json DTOs ─────────────────────────────────────────
+
+        [Serializable] class SfzDeviceJson { public string model; public string os; public string ar_framework; }
+
+        [Serializable] class SfzRgbChannelJson   { public int width; public int height; public string format; }
+        [Serializable] class SfzDepthChannelJson { public int width; public int height; public string format; public float invalid_value; }
+        [Serializable] class SfzChannelsJson     { public SfzRgbChannelJson rgb; public SfzDepthChannelJson depth; }
+
+        [Serializable] class SfzFramesMetadataJson { public int fps; public SfzChannelsJson channels; }
+
+        [Serializable] class SfzFileRefJson         { public string file; }
+        [Serializable] class SfzPoseJson            { public float[] position; public float[] rotation; }
+        [Serializable] class SfzIntrinsicsJson      { public float fx; public float fy; public float cx; public float cy; }
+        [Serializable] class SfzLightEstimationJson { public float ambient_intensity; public float color_temperature; }
+        [Serializable] class SfzCameraJson          { public SfzPoseJson pose; public SfzIntrinsicsJson intrinsics; }
+        [Serializable] class SfzFrameRecordJson
+        {
+            public long                   timestamp_ns;
+            public SfzCameraJson          camera;
+            public SfzLightEstimationJson light_estimation;
+            public SfzFileRefJson         rgb;
+            public SfzFileRefJson         depth;
+        }
+        [Serializable] class SfzFramesTrackJson { public SfzFramesMetadataJson metadata; public SfzFrameRecordJson[] data; }
+
+        [Serializable] class SfzImuMetadataJson { public float sample_rate_hz; }
+        [Serializable] class SfzImuSampleJson
+        {
+            public long    timestamp_ns;
+            public float[] acceleration;
+            public float[] rotation_rate;
+            public float[] gravity;
+        }
+        [Serializable] class SfzImuTrackJson { public SfzImuMetadataJson metadata; public SfzImuSampleJson[] data; }
+
+        [Serializable] class SfzTracksJson    { public SfzFramesTrackJson frames; public SfzImuTrackJson imu; }
+
+        [Serializable] class SfzMeshAttachmentJson { public string file; public string format; }
+        [Serializable] class SfzAttachmentsJson    { public SfzMeshAttachmentJson scene_mesh; }
+
+        [Serializable] class SfzSessionJson
+        {
+            public string              version;
+            public string              session_id;
+            public string              start_time_utc;
+            public SfzDeviceJson       device;
+            public SfzTracksJson       tracks;
+            public SfzAttachmentsJson  attachments;
+        }
+
+        // ── Nested: SFZ conversion helpers ───────────────────────────────────
+
+        static Matrix4x4 SfzPoseToMatrix4x4(SfzPoseJson pose)
+        {
+            if (pose?.position == null || pose.position.Length < 3 ||
+                pose.rotation  == null || pose.rotation.Length  < 4)
+                return Matrix4x4.identity;
+            return Matrix4x4.TRS(
+                new Vector3(pose.position[0], pose.position[1], pose.position[2]),
+                new Quaternion(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]),
+                Vector3.one);
+        }
+
+        static Vector4 SfzIntrinsicsToVector4(SfzIntrinsicsJson intr) =>
+            intr != null ? new Vector4(intr.fx, intr.fy, intr.cx, intr.cy) : Vector4.zero;
+
+        static byte[] ReadZipEntry(ZipArchiveEntry entry)
+        {
+            var buf = new byte[(int)entry.Length];
+            using var s = entry.Open();
+            int total = 0;
+            while (total < buf.Length)
+            {
+                int n = s.Read(buf, total, buf.Length - total);
+                if (n <= 0) break;
+                total += n;
+            }
+            return buf;
         }
 
         // ── Nested: SfzBackendBase ────────────────────────────────────────────
@@ -477,9 +561,9 @@ namespace SensorFlex.Player.Library
                     {
                         var rec = records[item.RecordIndex];
                         if (rec.camera?.pose != null)
-                            m_State.Poses[slot] = SfzUtils.SfzPoseToMatrix4x4(rec.camera.pose);
+                            m_State.Poses[slot] = SfzPoseToMatrix4x4(rec.camera.pose);
                         if (rec.camera?.intrinsics != null)
-                            m_State.Intrinsics[slot] = SfzUtils.SfzIntrinsicsToVector4(rec.camera.intrinsics);
+                            m_State.Intrinsics[slot] = SfzIntrinsicsToVector4(rec.camera.intrinsics);
                     }
 
                     m_State.SlotGlobalIdx[slot] = item.GlobalFrameIndex;
@@ -625,7 +709,7 @@ namespace SensorFlex.Player.Library
                 {
                     using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
                     var entry = archive.GetEntry($"session/{att.File}");
-                    return entry != null ? SfzUtils.ReadEntry(entry) : null;
+                    return entry != null ? ReadZipEntry(entry) : null;
                 }
                 catch (Exception e) { Debug.LogWarning($"[SF] SFZ: failed to read attachment '{attachmentName}': {e.Message}"); return null; }
             }
@@ -642,7 +726,7 @@ namespace SensorFlex.Player.Library
                 try
                 {
                     var entry = m_PassArchive?.GetEntry($"session/{relativePath}");
-                    return entry != null ? SfzUtils.ReadEntry(entry) : null;
+                    return entry != null ? ReadZipEntry(entry) : null;
                 }
                 catch (Exception e) { Debug.LogWarning($"[SF] SFZ: failed to read {relativePath}: {e.Message}"); return null; }
             }

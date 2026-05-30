@@ -405,7 +405,7 @@ namespace SensorFlex.Player.Subsystem
                     SfzSessionStore.Poses[slot] != Matrix4x4.zero)
                 {
                     PoseBridge.SetUnityPose(
-                        SfzUtils.ConvertToUnityPose(
+                        MathUtils.ConvertToUnityPose(
                             SfzSessionStore.Poses[slot],
                             SfzSessionStore.CoordConvMatrix,
                             SfzSessionStore.UseNegativeZForwardOpticalAxis));
@@ -488,7 +488,7 @@ namespace SensorFlex.Player.Subsystem
                 ARSensorFlexSession.GetPreferredClipPlanes(out float nearClipPlane, out float farClipPlane);
                 int projectionWidth = m_CurrentTexture != null ? m_CurrentTexture.width : 1920;
                 int projectionHeight = m_CurrentTexture != null ? m_CurrentTexture.height : 1440;
-                var projectionMatrix = SfzUtils.ComputeProjectionMatrix(
+                var projectionMatrix = MathUtils.ComputeProjectionMatrix(
                     m_CurrentIntrinsics,
                     projectionWidth,
                     projectionHeight,
