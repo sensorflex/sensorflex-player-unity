@@ -258,6 +258,8 @@ namespace SensorFlex.Player.Subsystem
                             m_LoadingOverlay?.Hide();
 
                         m_StartupStage = StartupStage.Playing;
+                        if (session?.AutoPlay == false)
+                            ControlBridge.Pause();
                         m_LiveLastAdvanceTime = Time.realtimeSinceStartupAsDouble;
 
                         // Start from the latest buffered frame — the preload just ensures
@@ -295,6 +297,8 @@ namespace SensorFlex.Player.Subsystem
                             m_LoadingOverlay?.Hide();
 
                         m_StartupStage = StartupStage.Playing;
+                        if (session?.AutoPlay == false)
+                            ControlBridge.Pause();
 
                         int firstGlobalFrameIndex = 0;
                         int firstSlot = firstGlobalFrameIndex % SfzSessionStore.BufSize;

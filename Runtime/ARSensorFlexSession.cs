@@ -51,6 +51,8 @@ namespace SensorFlex.Player
         [Min(1)]
         [SerializeField] int m_PreloadFrameCount = 120;
         [SerializeField] bool m_LoopSequence = true;
+        [Tooltip("Automatically begin playback once attachments and frames have finished loading. Uncheck to start paused.")]
+        [SerializeField] bool m_AutoPlay = true;
 
         [Header("Depth (Occlusion)")]
         [Tooltip("Enable the XROcclusionSubsystem to supply environment depth textures.")]
@@ -72,6 +74,7 @@ namespace SensorFlex.Player
         internal string FileIoPath => m_FileIoPath;
         internal int PreloadFrameCount => Mathf.Max(1, m_PreloadFrameCount);
         internal bool LoopSequence => m_LoopSequence;
+        internal bool AutoPlay     => m_AutoPlay;
         internal bool DepthEnabled => m_DepthEnabled;
         internal float EffectiveDepthWorldScale
         {
