@@ -38,7 +38,7 @@ namespace SensorFlex.Player.Library
             m_SceneId = sceneId;
         }
 
-        // Entry point — called by FrameLoader.ProcessAttachments() for all source modes.
+        // Entry point — called by SfzSessionStore.ScannedMeshLoaderImpl.Tick().
         public static ScannedSceneMeshLoadOperation StartFromPlyBytes(
             byte[] plyBytes, Matrix4x4 coordConvMatrix, string sceneId)
         {
