@@ -471,6 +471,13 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 string source = session.SourceMode.ToString();
+
+                if (SfzSessionStore.IsLoadingAttachments)
+                {
+                    m_LoadingOverlay.Show($"Loading attachment: scene mesh\nSource: {source}");
+                    return;
+                }
+
                 int progress = Math.Min(FramesLoaded, FramesToWait);
                 m_LoadingOverlay.Show($"Loading SensorFlex frames...\nSource: {source}\nWarmup: {progress}/{FramesToWait}");
             }

@@ -54,8 +54,9 @@ namespace SensorFlex.Player.Library
         internal static Vector2Int LatestTextureDimensions = new(1920, 1440);
 
         // ── Session state ─────────────────────────────────────────────────────
-        internal static bool IsActive => s_LoadState != SessionLoadState.Idle;
-        internal static bool IsReady  => s_LoadState == SessionLoadState.Ready;
+        internal static bool IsActive             => s_LoadState != SessionLoadState.Idle;
+        internal static bool IsLoadingAttachments => s_LoadState == SessionLoadState.LoadingAttachments;
+        internal static bool IsReady              => s_LoadState == SessionLoadState.Ready;
 
         // ── Ring buffer proxies (read-only for all consumers) ─────────────────
         internal static double    FrameInterval                  => s_Backend?.State?.FrameInterval ?? (1.0 / 30);
