@@ -8,7 +8,7 @@
 // Private nested types (all invisible outside this file):
 //   IBackendState / BackendState  — ring-buffer state contract + implementation
 //   ISessionBackend               — three-phase backend contract (Open / TryGetSessionJson / StartLoading)
-//   SessionLoadState              — session lifecycle enum (Idle / Waiting / Loading / Ready)
+//   SessionLoadState              — session lifecycle enum (Idle / Waiting / LoadingAttachments / Loading / Ready)
 //   SfzTrackInfo                  — per-track metadata (name, sample interval, record count)
 //   SfzAttachmentInfo             — per-attachment metadata (name, file, format)
 //   SfzSessionData                — parsed session.json aggregate
@@ -107,10 +107,19 @@ namespace SensorFlex.Player.Library
                 case SessionLoadState.Waiting:
                     if (s_Backend.TryGetSessionJson(out var json) && TryParseSession(json, out s_SessionData))
                     {
+                        s_LoadState = SessionLoadState.LoadingAttachments;
+                        Debug.Log($"[SF] SfzSessionStore: session parsed. id={s_SessionData.SessionId} " +
+                                  $"tracks={s_SessionData.Tracks.Count} attachments={s_SessionData.Attachments.Count}");
+                    }
+                    break;
+
+                case SessionLoadState.LoadingAttachments:
+                    s_MeshLoader.Tick();
+                    if (s_MeshLoader.IsComplete)
+                    {
                         s_Backend.StartLoading(s_SessionData, s_BufSize, s_FramesToWait);
                         s_LoadState = SessionLoadState.Loading;
-                        Debug.Log($"[SF] SfzSessionStore: session loaded. id={s_SessionData.SessionId} " +
-                                  $"tracks={s_SessionData.Tracks.Count} attachments={s_SessionData.Attachments.Count}");
+                        Debug.Log("[SF] SfzSessionStore: attachments ready — starting frame streaming.");
                     }
                     break;
 
@@ -124,8 +133,6 @@ namespace SensorFlex.Player.Library
                     }
                     break;
             }
-
-            s_MeshLoader.Tick();
         }
 
         internal static async Task StopSessionAsync()
@@ -305,7 +312,7 @@ namespace SensorFlex.Player.Library
 
         // ── Nested: Session contracts ─────────────────────────────────────────
 
-        enum SessionLoadState { Idle, Waiting, Loading, Ready }
+        enum SessionLoadState { Idle, Waiting, LoadingAttachments, Loading, Ready }
 
         interface ISessionBackend
         {
@@ -700,8 +707,8 @@ namespace SensorFlex.Player.Library
 
             public override byte[] TryGetAttachmentBytes(string attachmentName)
             {
-                if (m_SessionData == null ||
-                    !m_SessionData.Attachments.TryGetValue(attachmentName, out var att) ||
+                if (s_SessionData == null ||
+                    !s_SessionData.Attachments.TryGetValue(attachmentName, out var att) ||
                     string.IsNullOrEmpty(att.File))
                     return null;
 
@@ -766,8 +773,8 @@ namespace SensorFlex.Player.Library
 
             public override byte[] TryGetAttachmentBytes(string attachmentName)
             {
-                if (m_SessionData == null ||
-                    !m_SessionData.Attachments.TryGetValue(attachmentName, out var att) ||
+                if (s_SessionData == null ||
+                    !s_SessionData.Attachments.TryGetValue(attachmentName, out var att) ||
                     string.IsNullOrEmpty(att.File))
                     return null;
 
@@ -1159,6 +1166,17 @@ namespace SensorFlex.Player.Library
 
             ScannedSceneMeshLoadOperation m_PendingLoad;
             bool m_Started;
+
+            public bool IsComplete
+            {
+                get
+                {
+                    var data = s_SessionData;
+                    if (data == null) return false;
+                    if (!data.Attachments.ContainsKey("scene_mesh")) return true;
+                    return m_Started && m_PendingLoad == null;
+                }
+            }
 
             public void Tick()
             {
