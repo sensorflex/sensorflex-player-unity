@@ -1,13 +1,9 @@
-// FrameLoader.cs — shared session contracts used by SfzSessionStore and LiveWebSocketBackend.
+// FrameLoader.cs — shared session contracts used by SfzSessionStore and future LiveSessionStore.
 //
 // Ring-buffer state:  IBackendState / BackendState
 // Backend contract:   ISessionBackend (three-phase: Open / TryGetSessionJson / StartLoading)
 // Session load state: SessionLoadState enum
 // Session data model: SfzSessionData, SfzTrackInfo, SfzAttachmentInfo
-//
-// SfzSessionStore owns all SFZ/FileIo IO and does not use ISessionBackend internally.
-// ISessionBackend exists here so LiveWebSocketBackend can implement it independently
-// until it is promoted to a full LiveSessionStore.
 
 using System;
 using System.Collections.Generic;

@@ -42,8 +42,6 @@ namespace SensorFlex.Player
 
         [Header("Frame Source")]
         [SerializeField] FrameSourceMode m_FrameSourceMode = FrameSourceMode.FileIo;
-        // Kept for LiveWebSocketBackend compilation — not shown in inspector.
-        [HideInInspector] [SerializeField] string m_WebSocketUrl = "ws://localhost:3000";
         [Tooltip("Path to the .sfz archive. Can be absolute or relative to StreamingAssets.")]
         [SerializeField] string m_SfzFilePath = "";
         [Tooltip("Path to the SFZ session directory (containing session.json). Can be absolute or relative to StreamingAssets.")]
@@ -53,9 +51,6 @@ namespace SensorFlex.Player
         [Min(1)]
         [SerializeField] int m_PreloadFrameCount = 120;
         [SerializeField] bool m_LoopSequence = true;
-        // Kept for LiveWebSocketBackend compilation — not shown in inspector.
-        [HideInInspector] [Min(1)]
-        [SerializeField] int m_TotalLiveBufferSize = 300;
 
         [Header("Depth (Occlusion)")]
         [Tooltip("Enable the XROcclusionSubsystem to supply environment depth textures.")]
@@ -73,12 +68,10 @@ namespace SensorFlex.Player
         public static ARSensorFlexSession ActiveSession { get; private set; }
 
         internal FrameSourceMode SourceMode => m_FrameSourceMode;
-        internal string WebSocketUrl => m_WebSocketUrl;
         internal string SfzFilePath => m_SfzFilePath;
         internal string FileIoPath => m_FileIoPath;
         internal int PreloadFrameCount => Mathf.Max(1, m_PreloadFrameCount);
         internal bool LoopSequence => m_LoopSequence;
-        internal int TotalLiveBufferSize => Mathf.Max(PreloadFrameCount, m_TotalLiveBufferSize);
         internal bool DepthEnabled => m_DepthEnabled;
         internal float EffectiveDepthWorldScale
         {
