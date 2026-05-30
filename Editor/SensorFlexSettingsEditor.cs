@@ -51,6 +51,8 @@ namespace SensorFlexPlayer.Editor
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_PreloadFrameCount"),
                 new GUIContent("Preload Frame Count"));
             EditorGUILayout.PropertyField(serializedObject.FindProperty("m_LoopSequence"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("m_AutoPlay"),
+                new GUIContent("Auto Play", "Automatically begin playback once attachments and frames have finished loading. Uncheck to start paused."));
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("World Alignment", EditorStyles.boldLabel);
