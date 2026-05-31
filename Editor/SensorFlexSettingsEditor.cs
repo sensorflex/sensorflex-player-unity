@@ -25,26 +25,28 @@ namespace SensorFlexPlayer.Editor
                 var pathProp = serializedObject.FindProperty("m_SfzFilePath");
                 EditorGUILayout.BeginHorizontal();
                 pathProp.stringValue = EditorGUILayout.TextField("SFZ Archive", pathProp.stringValue);
-                if (GUILayout.Button("Browse…", GUILayout.Width(70)))
+                bool browseSfz = GUILayout.Button("Browse…", GUILayout.Width(70));
+                EditorGUILayout.EndHorizontal();
+                if (browseSfz)
                 {
                     string picked = EditorUtility.OpenFilePanel("Select SFZ archive", "", "sfz");
                     if (!string.IsNullOrEmpty(picked))
                         pathProp.stringValue = picked;
                 }
-                EditorGUILayout.EndHorizontal();
             }
             else if (mode == ARSensorFlexSession.FrameSourceMode.FileIo)
             {
                 var pathProp = serializedObject.FindProperty("m_FileIoPath");
                 EditorGUILayout.BeginHorizontal();
                 pathProp.stringValue = EditorGUILayout.TextField("Session Directory", pathProp.stringValue);
-                if (GUILayout.Button("Browse…", GUILayout.Width(70)))
+                bool browseDir = GUILayout.Button("Browse…", GUILayout.Width(70));
+                EditorGUILayout.EndHorizontal();
+                if (browseDir)
                 {
                     string picked = EditorUtility.OpenFolderPanel("Select session directory", "", "");
                     if (!string.IsNullOrEmpty(picked))
                         pathProp.stringValue = picked;
                 }
-                EditorGUILayout.EndHorizontal();
             }
 
             EditorGUILayout.Space();

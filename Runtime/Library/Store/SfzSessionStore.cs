@@ -425,6 +425,16 @@ namespace SensorFlex.Player.Library
         [Serializable] class SfzMeshAttachmentJson { public string file; public string format; }
         [Serializable] class SfzAttachmentsJson    { public SfzMeshAttachmentJson scene_mesh; }
 
+        [Serializable] class SfzPartContentJson
+        {
+            public string type;
+            public string attachment_key;
+            public int    chunk_index;
+            public int    total_chunks;
+            public int[]  frame_range;
+        }
+        [Serializable] class SfzPartJson { public string file; public SfzPartContentJson[] contents; }
+
         [Serializable] class SfzSessionJson
         {
             public string              version;
@@ -433,6 +443,7 @@ namespace SensorFlex.Player.Library
             public SfzDeviceJson       device;
             public SfzTracksJson       tracks;
             public SfzAttachmentsJson  attachments;
+            public SfzPartJson[]       parts;
         }
 
         // ── Nested: SFZ conversion helpers ───────────────────────────────────
@@ -671,22 +682,47 @@ namespace SensorFlex.Player.Library
 
         sealed class SfzFileBackend : SfzBackendBase
         {
-            string     m_ArchivePath;
-            ZipArchive m_PassArchive;
+            string     m_ArchivePath;    // single-file path, or part-0 path in multi-part
+            string[]   m_PartPaths;      // null in single-file mode
+            ZipArchive   m_PassArchive;  // single-file pass archive (background thread)
+            ZipArchive[] m_PassArchives; // multi-part pass archives (background thread)
+
+            // Built from the "parts" manifest in session.json (multi-part only)
+            (int Start, int End, int PartIdx)[]                       m_FrameRanges;
+            Dictionary<string, List<(int ChunkIdx, int PartIdx)>>     m_AttachChunks;
 
             protected override string BackendLabel => "SFZ";
 
             public override bool Open(ARSensorFlexSession session)
             {
-                m_Session     = session;
-                m_ArchivePath = session.SfzFilePath;
-                if (!Path.IsPathRooted(m_ArchivePath))
-                    m_ArchivePath = Path.Combine(Application.streamingAssetsPath, m_ArchivePath);
+                m_Session  = session;
+                string path = session.SfzFilePath;
+                if (!Path.IsPathRooted(path))
+                    path = Path.Combine(Application.streamingAssetsPath, path);
 
-                if (!File.Exists(m_ArchivePath))
+                if (TryResolveMultiPart(path, out var partPaths))
                 {
-                    Debug.LogError($"[SF] SFZ archive not found: {m_ArchivePath}");
-                    return false;
+                    m_PartPaths   = partPaths;
+                    m_ArchivePath = partPaths[0];
+                    foreach (var p in partPaths)
+                    {
+                        if (!File.Exists(p))
+                        {
+                            Debug.LogError($"[SF] SFZ multi-part: missing part file: {p}");
+                            return false;
+                        }
+                    }
+                    Debug.Log($"[SF] SFZ multi-part: {partPaths.Length} parts detected and all present.");
+                }
+                else
+                {
+                    m_PartPaths   = null;
+                    m_ArchivePath = path;
+                    if (!File.Exists(m_ArchivePath))
+                    {
+                        Debug.LogError($"[SF] SFZ archive not found: {m_ArchivePath}");
+                        return false;
+                    }
                 }
                 return true;
             }
@@ -696,11 +732,16 @@ namespace SensorFlex.Player.Library
                 json = null;
                 try
                 {
+                    // session.json is always in part 0 (m_ArchivePath points there for both modes)
                     using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
                     var entry = archive.GetEntry("session/session.json");
                     if (entry == null) { Debug.LogError("[SF] SFZ: session/session.json not found."); return false; }
                     using var sr = new StreamReader(entry.Open());
                     json = sr.ReadToEnd();
+
+                    if (m_PartPaths != null)
+                        BuildPartManifest(json);
+
                     return true;
                 }
                 catch (Exception e) { Debug.LogError("[SF] SFZ: failed to read session.json: " + e); return false; }
@@ -713,30 +754,172 @@ namespace SensorFlex.Player.Library
                     string.IsNullOrEmpty(att.File))
                     return null;
 
-                try
+                if (m_PartPaths == null || m_AttachChunks == null ||
+                    !m_AttachChunks.TryGetValue(attachmentName, out var chunks))
                 {
-                    using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
-                    var entry = archive.GetEntry($"session/{att.File}");
-                    return entry != null ? ReadZipEntry(entry) : null;
+                    // Single-file or no manifest — read from m_ArchivePath (part 0 in multi-part)
+                    try
+                    {
+                        using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
+                        var entry = archive.GetEntry($"session/{att.File}");
+                        return entry != null ? ReadZipEntry(entry) : null;
+                    }
+                    catch (Exception e) { Debug.LogWarning($"[SF] SFZ: failed to read attachment '{attachmentName}': {e.Message}"); return null; }
                 }
-                catch (Exception e) { Debug.LogWarning($"[SF] SFZ: failed to read attachment '{attachmentName}': {e.Message}"); return null; }
+
+                // Multi-part: read and concatenate chunks in order
+                var chunkBuffers = new List<byte[]>(chunks.Count);
+                long totalLen = 0;
+                foreach (var (_, partIdx) in chunks)
+                {
+                    try
+                    {
+                        using var archive = new ZipArchive(File.OpenRead(m_PartPaths[partIdx]), ZipArchiveMode.Read);
+                        var entry = archive.GetEntry($"session/{att.File}");
+                        if (entry == null)
+                        {
+                            Debug.LogWarning($"[SF] SFZ: attachment chunk missing in part {partIdx}: {att.File}");
+                            return null;
+                        }
+                        var b = ReadZipEntry(entry);
+                        chunkBuffers.Add(b);
+                        totalLen += b.Length;
+                    }
+                    catch (Exception e) { Debug.LogWarning($"[SF] SFZ: failed to read attachment chunk '{attachmentName}' part {partIdx}: {e.Message}"); return null; }
+                }
+
+                if (chunkBuffers.Count == 1) return chunkBuffers[0];
+
+                var combined = new byte[totalLen];
+                int offset = 0;
+                foreach (var b in chunkBuffers) { Buffer.BlockCopy(b, 0, combined, offset, b.Length); offset += b.Length; }
+                return combined;
             }
 
-            // Keep the archive open for the duration of each pass so the central
-            // directory is parsed only once per loop iteration.
+            // Keep archives open for the duration of each pass so central directories
+            // are parsed only once per loop iteration.
             protected override void BeginLoadPass()
-                => m_PassArchive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
+            {
+                if (m_PartPaths == null)
+                {
+                    m_PassArchive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
+                }
+                else
+                {
+                    m_PassArchives = new ZipArchive[m_PartPaths.Length];
+                    for (int i = 0; i < m_PartPaths.Length; i++)
+                        m_PassArchives[i] = new ZipArchive(File.OpenRead(m_PartPaths[i]), ZipArchiveMode.Read);
+                }
+            }
 
-            protected override void EndLoadPass() { m_PassArchive?.Dispose(); m_PassArchive = null; }
+            protected override void EndLoadPass()
+            {
+                m_PassArchive?.Dispose();
+                m_PassArchive = null;
+                if (m_PassArchives != null)
+                {
+                    foreach (var a in m_PassArchives) a?.Dispose();
+                    m_PassArchives = null;
+                }
+            }
 
             protected override byte[] ReadSessionFile(string relativePath)
             {
                 try
                 {
-                    var entry = m_PassArchive?.GetEntry($"session/{relativePath}");
+                    ZipArchive archive;
+                    if (m_PartPaths == null)
+                    {
+                        archive = m_PassArchive;
+                    }
+                    else
+                    {
+                        int partIdx = FindPartForRelativePath(relativePath);
+                        if (partIdx < 0) return null;
+                        archive = m_PassArchives?[partIdx];
+                    }
+                    var entry = archive?.GetEntry($"session/{relativePath}");
                     return entry != null ? ReadZipEntry(entry) : null;
                 }
                 catch (Exception e) { Debug.LogWarning($"[SF] SFZ: failed to read {relativePath}: {e.Message}"); return null; }
+            }
+
+            // ── Multi-part helpers ────────────────────────────────────────────
+
+            // Detects "basename-DDDDD-of-DDDDD.sfz", derives all part paths regardless
+            // of which part index the given path represents.
+            static bool TryResolveMultiPart(string resolvedPath, out string[] partPaths)
+            {
+                partPaths = null;
+                string stem = Path.GetFileNameWithoutExtension(resolvedPath);
+                string ext  = Path.GetExtension(resolvedPath);
+                string dir  = Path.GetDirectoryName(resolvedPath) ?? string.Empty;
+
+                int ofIdx = stem.LastIndexOf("-of-", StringComparison.Ordinal);
+                if (ofIdx < 0) return false;
+
+                string afterOf  = stem[(ofIdx + 4)..];
+                string beforeOf = stem[..ofIdx];
+                int dashIdx = beforeOf.LastIndexOf('-');
+                if (dashIdx < 0) return false;
+
+                if (!int.TryParse(beforeOf[(dashIdx + 1)..], out _) ||
+                    !int.TryParse(afterOf, out int total) || total <= 0)
+                    return false;
+
+                string baseName = beforeOf[..dashIdx];
+                partPaths = new string[total];
+                for (int i = 0; i < total; i++)
+                    partPaths[i] = Path.Combine(dir, $"{baseName}-{i:D5}-of-{total:D5}{ext}");
+                return true;
+            }
+
+            void BuildPartManifest(string json)
+            {
+                var raw = JsonUtility.FromJson<SfzSessionJson>(json);
+                if (raw?.parts == null || raw.parts.Length == 0) return;
+
+                var frameRanges = new List<(int Start, int End, int PartIdx)>();
+                m_AttachChunks  = new Dictionary<string, List<(int ChunkIdx, int PartIdx)>>();
+
+                foreach (var part in raw.parts)
+                {
+                    if (part.contents == null) continue;
+                    int partIdx = Array.FindIndex(m_PartPaths, p => Path.GetFileName(p) == part.file);
+                    if (partIdx < 0) continue;
+
+                    foreach (var content in part.contents)
+                    {
+                        if (content.type == "frames" && content.frame_range?.Length >= 2)
+                        {
+                            frameRanges.Add((content.frame_range[0], content.frame_range[1], partIdx));
+                        }
+                        else if (content.type == "attachment" && !string.IsNullOrEmpty(content.attachment_key))
+                        {
+                            if (!m_AttachChunks.TryGetValue(content.attachment_key, out var list))
+                                m_AttachChunks[content.attachment_key] = list = new List<(int, int)>();
+                            list.Add((content.chunk_index, partIdx));
+                        }
+                    }
+                }
+
+                frameRanges.Sort((a, b) => a.Start.CompareTo(b.Start));
+                m_FrameRanges = frameRanges.ToArray();
+                foreach (var kvp in m_AttachChunks)
+                    kvp.Value.Sort((a, b) => a.ChunkIdx.CompareTo(b.ChunkIdx));
+
+                Debug.Log($"[SF] SFZ multi-part manifest: {m_FrameRanges.Length} frame range(s), {m_AttachChunks.Count} attachment type(s).");
+            }
+
+            int FindPartForRelativePath(string relativePath)
+            {
+                if (m_FrameRanges == null || m_FrameRanges.Length == 0) return 0;
+                string stem = Path.GetFileNameWithoutExtension(relativePath);
+                if (!int.TryParse(stem, NumberStyles.None, CultureInfo.InvariantCulture, out int frameIdx))
+                    return -1;
+                foreach (var (start, end, partIdx) in m_FrameRanges)
+                    if (frameIdx >= start && frameIdx < end) return partIdx;
+                return -1;
             }
         }
 
