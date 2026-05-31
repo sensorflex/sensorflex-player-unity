@@ -11,6 +11,8 @@ stored per-session.
 
 ## Archive Structure
 
+### Single-file
+
 ```
 session/
 ├── session.json          ← all metadata and track data arrays
@@ -23,6 +25,25 @@ session/
 └── scene_mesh.ply        (present only when attachments.scene_mesh exists)
 ```
 
+### Multi-part
+
+When an archive exceeds a target size it is split into numbered part files:
+
+```
+<scene_id>-00000-of-00003.sfz   session.json + first content chunk(s)
+<scene_id>-00001-of-00003.sfz   next content chunk(s)
+<scene_id>-00002-of-00003.sfz   last content chunk(s)
+```
+
+- The naming suffix is `-DDDDD-of-DDDDD` (zero-padded, five digits each).
+- A reader that receives **any** part can derive all part filenames from the suffix alone.
+- `session.json` is always in part 0. All other parts contain only binary assets.
+- Content is packed greedily in this order: `session.json` → attachment data → frame data.
+  If the first part has remaining capacity after `session.json`, attachment chunks and then
+  frame assets are added until the size limit is reached before a new part is started.
+- A `parts` manifest in `session.json` describes every part's contents (see below).
+- Readers must verify all parts are present before beginning to load.
+
 **Compression:**
 - `.jpg` files: `ZIP_STORED` (already compressed)
 - everything else: `ZIP_DEFLATED`
@@ -33,7 +54,8 @@ File paths inside `session.json` are relative to `session/`.
 
 ## session.json
 
-Single file containing all session metadata and track data arrays.
+Single file containing all session metadata and track data arrays. Always lives in part 0
+of a multi-part archive.
 
 ```json
 {
@@ -48,6 +70,25 @@ Single file containing all session metadata and track data arrays.
   "attachments": {
     "scene_mesh": { "file": "scene_mesh.ply", "format": "ply" }
   },
+  "parts": [
+    {
+      "file": "<scene_id>-00000-of-00002.sfz",
+      "contents": [
+        { "type": "session" },
+        { "type": "attachment", "attachment_key": "scene_mesh",
+          "chunk_index": 0, "total_chunks": 2 },
+        { "type": "frames", "frame_range": [0, 499] }
+      ]
+    },
+    {
+      "file": "<scene_id>-00001-of-00002.sfz",
+      "contents": [
+        { "type": "attachment", "attachment_key": "scene_mesh",
+          "chunk_index": 1, "total_chunks": 2 },
+        { "type": "frames", "frame_range": [499, 1250] }
+      ]
+    }
+  ],
   "tracks": {
     "frames": {
       "metadata": {
@@ -213,6 +254,77 @@ An offline-reconstructed static mesh of the captured environment.
 
 **Coordinate frame:** Unity world space — the same frame as `tracks.frames` poses.
 No conversion is required when rendering the mesh against replayed camera data.
+
+---
+
+## Multi-Part Archives
+
+### parts manifest
+
+`session.json` includes a top-level `parts` array when the archive is split. It is omitted
+entirely in single-file archives. Each element describes one part file and its contents.
+
+```json
+"parts": [
+  {
+    "file": "<scene_id>-00000-of-00003.sfz",
+    "contents": [
+      { "type": "session" },
+      { "type": "attachment", "attachment_key": "scene_mesh",
+        "chunk_index": 0, "total_chunks": 2 },
+      { "type": "frames", "frame_range": [0, 499] }
+    ]
+  },
+  {
+    "file": "<scene_id>-00001-of-00003.sfz",
+    "contents": [
+      { "type": "attachment", "attachment_key": "scene_mesh",
+        "chunk_index": 1, "total_chunks": 2 },
+      { "type": "frames", "frame_range": [499, 999] }
+    ]
+  },
+  {
+    "file": "<scene_id>-00002-of-00003.sfz",
+    "contents": [
+      { "type": "frames", "frame_range": [999, 1250] }
+    ]
+  }
+]
+```
+
+### Content item fields
+
+| `type` | Additional fields | Description |
+|---|---|---|
+| `"session"` | — | This part file contains `session/session.json` |
+| `"frames"` | `frame_range: [start, end)` | Frame assets `rgb/NNNNNN.jpg` and `depth/NNNNNN.bin` for indices `[start, end)` |
+| `"attachment"` | `attachment_key`, `chunk_index`, `total_chunks` | Raw byte slice of the named attachment file; concatenate all chunks in `chunk_index` order to recover the original file |
+
+`frame_range` end is **exclusive** (Python-slice convention).
+
+### Reader algorithm
+
+1. Detect the `-DDDDD-of-DDDDD.sfz` suffix in the given filename.
+2. Derive all `total` part paths; verify every file exists before proceeding.
+3. Open part 0, read `session.json`.
+4. If `parts` is present, build two indices from it:
+   - **Frame index → part**: for each `"frames"` item, map `[start, end)` to a part file.
+   - **Attachment chunks → part**: for each `"attachment"` item, record `(chunk_index, part_file)`.
+5. To read `rgb/000500.jpg` or `depth/000500.bin`: parse the frame index (500), look up
+   the interval, open the correct part.
+6. To read an attachment: collect all chunks sorted by `chunk_index`, read each chunk's
+   `session/<attachment.file>` entry from its part, concatenate the raw bytes.
+
+### Size estimation (writer side)
+
+The reference converter (`scannetpp_sfz.py`) estimates per-frame size as:
+
+```
+frame_size ≈ on_disk_rgb_bytes + DEPTH_H × DEPTH_W × 4   (uncompressed depth upper bound)
+```
+
+This is conservative — actual part files are typically smaller than the configured limit
+because depth compresses well under `ZIP_DEFLATED`.
 
 ---
 
