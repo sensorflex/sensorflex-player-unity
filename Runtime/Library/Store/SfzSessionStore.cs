@@ -352,8 +352,8 @@ namespace SensorFlex.Player.Library
             public int       BufSize                        => TotalFrames;
             public bool      IsReady                        { get; set; }
 
-            public Texture2D[]  Frames        => null;
-            public byte[][]     DepthBins     => null;
+            public Texture2D[]  Frames        { get => null; set { } }
+            public byte[][]     DepthBins     { get => null; set { } }
             public Matrix4x4[]  Poses         { get; set; }
             public Vector4[]    Intrinsics    { get; set; }
             public bool[]       SlotReady     { get; set; }
