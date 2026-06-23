@@ -41,7 +41,7 @@ namespace SensorFlex.Player.Subsystem
             static readonly int EnvironmentDepthPropertyId = Shader.PropertyToID("_EnvironmentDepth");
 
             ARSensorFlexSession session;
-            Texture2D m_CurrentDepthTexture;
+            Texture m_CurrentDepthTexture;
             bool framesReady;
             bool m_HasBoundSession;
             bool m_LoggedWaitingForSession;
@@ -49,6 +49,8 @@ namespace SensorFlex.Player.Subsystem
             bool m_IsSfzMode;
             Texture2D m_SfzDepthTexture;
             int m_LastSfzPlayHead = -1;
+            RenderTexture m_VideoDepthRT;
+            Material m_DepthConvMaterial;
 
             // ----------------------------------------------------------------
             // Environment depth mode
@@ -205,6 +207,19 @@ namespace SensorFlex.Player.Subsystem
                     m_SfzDepthTexture = null;
                 }
 
+                if (m_VideoDepthRT != null)
+                {
+                    m_VideoDepthRT.Release();
+                    UnityEngine.Object.Destroy(m_VideoDepthRT);
+                    m_VideoDepthRT = null;
+                }
+
+                if (m_DepthConvMaterial != null)
+                {
+                    UnityEngine.Object.Destroy(m_DepthConvMaterial);
+                    m_DepthConvMaterial = null;
+                }
+
                 m_CurrentDepthTexture = null;
                 framesReady = false;
                 m_IsSfzMode = false;
@@ -219,12 +234,13 @@ namespace SensorFlex.Player.Subsystem
                     return false;
                 }
 
+                var depthFmt = m_CurrentDepthTexture is Texture2D dt2d ? dt2d.format : TextureFormat.RFloat;
                 descriptor = new XRTextureDescriptor(
                     m_CurrentDepthTexture.GetNativeTexturePtr(),
                     m_CurrentDepthTexture.width,
                     m_CurrentDepthTexture.height,
                     m_CurrentDepthTexture.mipmapCount,
-                    m_CurrentDepthTexture.format,
+                    depthFmt,
                     EnvironmentDepthPropertyId,
                     0,
                     XRTextureType.Texture2D
@@ -269,6 +285,25 @@ namespace SensorFlex.Player.Subsystem
                 if (!SfzSessionStore.IsReady)
                     return;
 
+                if (SfzSessionStore.IsVideoMode)
+                {
+                    var shader = Shader.Find("SensorFlex/DepthBgraToFloat");
+                    if (shader == null)
+                    {
+                        Debug.LogError("[SF] OcclusionSubsystem: shader 'SensorFlex/DepthBgraToFloat' not found.");
+                        return;
+                    }
+                    m_DepthConvMaterial = new Material(shader);
+                    var srcRT = SfzSessionStore.VideoDepthTexture;
+                    int dw = srcRT != null ? srcRT.width  : RawDepthWidth;
+                    int dh = srcRT != null ? srcRT.height : RawDepthHeight;
+                    m_VideoDepthRT = new RenderTexture(dw, dh, 0, RenderTextureFormat.RFloat);
+                    m_VideoDepthRT.Create();
+                    framesReady = true;
+                    Debug.Log($"[SF] OcclusionSubsystem: video depth conversion RT allocated ({dw}x{dh}).");
+                    return;
+                }
+
                 m_SfzDepthTexture = new Texture2D(RawDepthWidth, RawDepthHeight, TextureFormat.RFloat, false);
                 framesReady = true;
                 Debug.Log("[SF] OcclusionSubsystem: ZIP depth texture allocated.");
@@ -277,7 +312,22 @@ namespace SensorFlex.Player.Subsystem
             void UpdateSfzDepthTexture()
             {
                 EnsureSfzLoaderReady();
-                if (!framesReady || m_SfzDepthTexture == null)
+                if (!framesReady)
+                    return;
+
+                if (SfzSessionStore.IsVideoMode)
+                {
+                    var srcRT = SfzSessionStore.VideoDepthTexture;
+                    if (srcRT == null || m_VideoDepthRT == null || m_DepthConvMaterial == null)
+                        return;
+                    // VideoPlayer was seeked to the correct frame in PlayBufferedSlot.
+                    // Blit BGRA float16-packed → RFloat metres.
+                    Graphics.Blit(srcRT, m_VideoDepthRT, m_DepthConvMaterial);
+                    m_CurrentDepthTexture = m_VideoDepthRT;
+                    return;
+                }
+
+                if (m_SfzDepthTexture == null)
                     return;
 
                 if (SfzSessionStore.DepthBins == null)

@@ -70,7 +70,7 @@ namespace SensorFlex.Player.Subsystem
             // Live mode is temporarily disabled — always false until ARSensorFlexLiveSession is introduced.
             bool IsLiveMode => false;
 
-            Texture2D m_CurrentTexture;
+            Texture m_CurrentTexture;
             Material m_CameraMaterial;
             Vector4 m_CurrentIntrinsics = new Vector4(935.3f, 935.3f, 960f, 720f);
             XRCameraConfiguration m_CurrentConfiguration;
@@ -278,10 +278,12 @@ namespace SensorFlex.Player.Subsystem
                         return;
                     }
 
-                    // Replay warmup: count ticks until FramesToWait frames have been buffered
+                    // Replay warmup: count ticks until FramesToWait frames have been buffered.
+                    // Video mode skips frame-count warmup — just wait for VideoPlayers to prepare.
                     FramesLoaded++;
 
-                    if (FramesLoaded >= FramesToWait && SfzSessionStore.IsReady)
+                    bool warmupDone = SfzSessionStore.IsVideoMode || FramesLoaded >= FramesToWait;
+                    if (warmupDone && SfzSessionStore.IsReady)
                     {
                         if (!m_LoggedPreloadComplete)
                         {
@@ -389,7 +391,15 @@ namespace SensorFlex.Player.Subsystem
 
             void PlayBufferedSlot(int slot)
             {
-                SetCurrentTexture(SfzSessionStore.Frames[slot]);
+                if (SfzSessionStore.IsVideoMode)
+                {
+                    SfzSessionStore.SeekVideoFrame(slot);
+                    SetCurrentTexture(SfzSessionStore.VideoRgbTexture);
+                }
+                else
+                {
+                    SetCurrentTexture(SfzSessionStore.Frames[slot]);
+                }
 
                 timestampNs += (long)(frameInterval * 1_000_000_000L);
                 SfzSessionStore.LatestTimestampNs = timestampNs;
@@ -440,7 +450,7 @@ namespace SensorFlex.Player.Subsystem
                     UpdateLoadingScreenText();
             }
 
-            void SetCurrentTexture(Texture2D texture)
+            void SetCurrentTexture(Texture texture)
             {
                 m_CurrentTexture = texture;
                 if (m_CurrentTexture != null)
@@ -538,12 +548,13 @@ namespace SensorFlex.Player.Subsystem
                 }
 
                 var descriptors = new NativeArray<XRTextureDescriptor>(1, allocator);
+                var texFormat = m_CurrentTexture is Texture2D t2d ? t2d.format : TextureFormat.RGBA32;
                 descriptors[0] = new XRTextureDescriptor(
                     m_CurrentTexture.GetNativeTexturePtr(),
                     m_CurrentTexture.width,
                     m_CurrentTexture.height,
                     m_CurrentTexture.mipmapCount,
-                    m_CurrentTexture.format,
+                    texFormat,
                     Shader.PropertyToID("_MainTex"),
                     0,
                     XRTextureType.Texture2D);
