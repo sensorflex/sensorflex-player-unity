@@ -75,10 +75,20 @@ namespace SensorFlex.Player.Library
         internal static int          PendingDecodeCount => s_Backend?.State?.PendingDecodeCount ?? 0;
 
         // ── Video mode proxies ────────────────────────────────────────────────
-        internal static bool          IsVideoMode       => s_Backend?.State?.IsVideoMode ?? false;
-        internal static RenderTexture VideoRgbTexture   => s_Backend?.State?.VideoRgbTexture;
-        internal static RenderTexture VideoDepthTexture => s_Backend?.State?.VideoDepthTexture;
-        internal static void SeekVideoFrame(int idx)   => s_Backend?.State?.SeekVideoFrame(idx);
+        internal static bool          IsVideoMode            => s_Backend?.State?.IsVideoMode ?? false;
+        internal static RenderTexture VideoRgbTexture        => s_Backend?.State?.VideoRgbTexture;
+        internal static RenderTexture VideoDepthTexture      => s_Backend?.State?.VideoDepthTexture;
+        internal static void          SeekVideoFrame(int idx)=> s_Backend?.State?.SeekVideoFrame(idx);
+        internal static long          VideoPlayerCurrentFrame=> s_Backend?.State?.VideoPlayerCurrentFrame ?? 0;
+        internal static void PlayVideo()                         => s_Backend?.State?.PlayVideo();
+        internal static void PauseVideo()                        => s_Backend?.State?.PauseVideo();
+        internal static void SetVideoPlaybackSpeed(float speed)  => s_Backend?.State?.SetVideoPlaybackSpeed(speed);
+        internal static void SetVideoLooping(bool loop)          => s_Backend?.State?.SetVideoLooping(loop);
+        internal static void SetVideoFrameReadyCallback(Action<int> cb) => s_Backend?.State?.SetFrameReadyCallback(cb);
+
+        // ── v2.0 depth proxies ────────────────────────────────────────────────
+        internal static Texture2D V2DepthTexture                          => s_Backend?.State?.V2DepthTexture;
+        internal static void      UpdateVideoDepthForFrame(int frameIdx)  => s_Backend?.State?.UpdateDepthForFrame(frameIdx);
 
         internal static int PlayHead
         {
@@ -195,7 +205,13 @@ namespace SensorFlex.Player.Library
             if (string.IsNullOrEmpty(json)) return false;
 
             var raw = JsonUtility.FromJson<SfzSessionJson>(json);
-            if (raw == null || string.IsNullOrEmpty(raw.version)) return false;
+            if (raw == null) return false;
+
+            // Dispatch v2.0 format.
+            if (raw.sfz_version == "2.0")
+                return TryParseSessionV2(json, out data);
+
+            if (string.IsNullOrEmpty(raw.version)) return false;
 
             var tracks = new Dictionary<string, SfzTrackInfo>();
             if (raw.tracks?.frames != null)
@@ -223,17 +239,50 @@ namespace SensorFlex.Player.Library
             bool isVideo = rgbCh?.format == "hevc_mp4";
 
             data = new SfzSessionData(
+                sessionId:    raw.session_id,
+                tracks:       tracks,
+                attachments:  attachments,
+                frameRecords: raw.tracks?.frames?.data,
+                isVideoFormat: isVideo,
+                isV2Format:   false,
+                rgbMp4File:   isVideo ? (rgbCh?.file   ?? "rgb.mp4")   : null,
+                depthMp4File: isVideo ? (depthCh?.file ?? "depth.mp4") : null,
+                depthBinFile: null,
+                rgbWidth:    rgbCh?.width    ?? 1920,
+                rgbHeight:   rgbCh?.height   ?? 1440,
+                depthWidth:  depthCh?.width  ?? 256,
+                depthHeight: depthCh?.height ?? 192);
+
+            return true;
+        }
+
+        static bool TryParseSessionV2(string json, out SfzSessionData data)
+        {
+            data = null;
+            var raw = JsonUtility.FromJson<SfzV2SessionJson>(json);
+            if (raw == null || string.IsNullOrEmpty(raw.session_id)) return false;
+
+            double sampleInterval = raw.actual_fps > 0 ? 1.0 / raw.actual_fps : 1.0 / 60;
+            var tracks = new Dictionary<string, SfzTrackInfo>
+            {
+                ["frames"] = new SfzTrackInfo("frames", sampleInterval, raw.frame_count)
+            };
+
+            data = new SfzSessionData(
                 raw.session_id,
                 tracks,
-                attachments,
-                raw.tracks?.frames?.data,
-                isVideo,
-                isVideo ? (rgbCh?.file   ?? "rgb.mp4")   : null,
-                isVideo ? (depthCh?.file ?? "depth.mp4") : null,
-                rgbCh?.width   ?? 1920,
-                rgbCh?.height  ?? 1440,
-                depthCh?.width  ?? 256,
-                depthCh?.height ?? 192);
+                new Dictionary<string, SfzAttachmentInfo>(),
+                frameRecords:    null,
+                isVideoFormat:   false,
+                isV2Format:      true,
+                rgbMp4File:      raw.rgb?.file  ?? "rgb.mp4",
+                depthMp4File:    null,
+                depthBinFile:    raw.depth?.file ?? "depth.bin",
+                rgbWidth:        raw.rgb?.width   ?? 1920,
+                rgbHeight:       raw.rgb?.height  ?? 1440,
+                depthWidth:      raw.depth?.width  ?? 256,
+                depthHeight:     raw.depth?.height ?? 192,
+                frameCount:      raw.frame_count);
 
             return true;
         }
@@ -264,6 +313,14 @@ namespace SensorFlex.Player.Library
             RenderTexture VideoRgbTexture    { get; }
             RenderTexture VideoDepthTexture  { get; }
             void          SeekVideoFrame(int frameIndex);
+            long          VideoPlayerCurrentFrame     { get; }
+            void          PlayVideo();
+            void          PauseVideo();
+            void          SetVideoPlaybackSpeed(float speed);
+            void          SetVideoLooping(bool loop);
+            void          SetFrameReadyCallback(Action<int> cb);
+            void          UpdateDepthForFrame(int frameIdx);
+            Texture2D     V2DepthTexture { get; }
         }
 
         sealed class BackendState : IBackendState
@@ -332,13 +389,21 @@ namespace SensorFlex.Player.Library
                 }
             }
 
-            public bool          IsVideoMode        => false;
-            public RenderTexture VideoRgbTexture    => null;
-            public RenderTexture VideoDepthTexture  => null;
-            public void          SeekVideoFrame(int frameIndex) { }
+            public bool          IsVideoMode              => false;
+            public RenderTexture VideoRgbTexture          => null;
+            public RenderTexture VideoDepthTexture        => null;
+            public void          SeekVideoFrame(int fi)  { }
+            public long          VideoPlayerCurrentFrame  => 0;
+            public void          PlayVideo()              { }
+            public void          PauseVideo()             { }
+            public void          SetVideoPlaybackSpeed(float s) { }
+            public void          SetVideoLooping(bool loop)     { }
+            public void          SetFrameReadyCallback(Action<int> cb) { }
+            public void          UpdateDepthForFrame(int fi) { }
+            public Texture2D     V2DepthTexture               => null;
         }
 
-        // ── Nested: Video backend state ───────────────────────────────────────
+        // ── Nested: Video backend state (v1.1) ───────────────────────────────
 
         sealed class VideoBackendState : IBackendState
         {
@@ -385,6 +450,8 @@ namespace SensorFlex.Player.Library
             bool          m_DepthPrepared;
             string        m_TempRgbPath;
             string        m_TempDepthPath;
+            long          m_CurrentFrame = -1; // updated by frameReady event, not .frame getter
+            Action<int>   m_FrameReadyCallback;
 
             public RenderTexture VideoRgbTexture   => m_RgbRT;
             public RenderTexture VideoDepthTexture => m_DepthRT;
@@ -424,7 +491,9 @@ namespace SensorFlex.Player.Library
 
                 m_RgbPlayer = m_RgbGo.AddComponent<VideoPlayer>();
                 ConfigurePlayer(m_RgbPlayer, "file://" + rgbPath, m_RgbRT);
-                m_RgbPlayer.prepareCompleted += OnRgbPrepared;
+                m_RgbPlayer.sendFrameReadyEvents = true;
+                m_RgbPlayer.frameReady          += OnRgbFrameReady;
+                m_RgbPlayer.prepareCompleted    += OnRgbPrepared;
                 m_RgbPlayer.Prepare();
 
                 m_DepthPlayer = m_DepthGo.AddComponent<VideoPlayer>();
@@ -445,28 +514,81 @@ namespace SensorFlex.Player.Library
                 player.skipOnDrop      = false;
             }
 
+            public void SetFrameReadyCallback(Action<int> cb) { m_FrameReadyCallback = cb; }
+
+            void OnRgbFrameReady(VideoPlayer _, long frameIdx)
+            {
+                if (frameIdx <= 3 || frameIdx % 300 == 0)
+                    Debug.Log($"[SF] frameReady: frameIdx={frameIdx} TotalFrames={TotalFrames}");
+                Volatile.Write(ref m_CurrentFrame, frameIdx);
+                m_FrameReadyCallback?.Invoke((int)frameIdx);
+            }
+
             void OnRgbPrepared(VideoPlayer _)   { m_RgbPrepared   = true; CheckBothPrepared(); }
             void OnDepthPrepared(VideoPlayer _) { m_DepthPrepared = true; CheckBothPrepared(); }
 
             void CheckBothPrepared()
             {
                 if (!m_RgbPrepared || !m_DepthPrepared) return;
+                // Stop auto-play that some platforms trigger after Prepare despite playOnAwake=false.
+                // This prevents the video from advancing before the warmup transition runs.
+                if (m_RgbPlayer.isPlaying)   m_RgbPlayer.Pause();
+                if (m_DepthPlayer.isPlaying) m_DepthPlayer.Pause();
                 IsReady = true;
                 Debug.Log("[SF] VideoBackendState: both VideoPlayers prepared.");
             }
 
+            // Called by the camera subsystem after warmup to start natural playback.
+            public void PlayVideo()
+            {
+                m_RgbPlayer?.Play();
+                m_DepthPlayer?.Play();
+            }
+
+            public void PauseVideo()
+            {
+                if (m_RgbPlayer?.isPlaying   == true) m_RgbPlayer.Pause();
+                if (m_DepthPlayer?.isPlaying == true) m_DepthPlayer.Pause();
+            }
+
+            public void SetVideoPlaybackSpeed(float speed)
+            {
+                if (m_RgbPlayer   != null) m_RgbPlayer.playbackSpeed   = speed;
+                if (m_DepthPlayer != null) m_DepthPlayer.playbackSpeed = speed;
+            }
+
+            public void SetVideoLooping(bool loop)
+            {
+                if (m_RgbPlayer   != null) m_RgbPlayer.isLooping   = loop;
+                if (m_DepthPlayer != null) m_DepthPlayer.isLooping = loop;
+            }
+
+            // Current frame — updated via frameReady event, not the unreliable .frame getter.
+            public long VideoPlayerCurrentFrame => Volatile.Read(ref m_CurrentFrame);
+
+            // Frame seek is only used for step-forward while paused; never during normal play.
             public void SeekVideoFrame(int frameIndex)
             {
-                if (m_RgbPlayer   != null && m_RgbPlayer.isPrepared)
-                    m_RgbPlayer.frame   = (long)frameIndex;
-                if (m_DepthPlayer != null && m_DepthPlayer.isPrepared)
-                    m_DepthPlayer.frame = (long)frameIndex;
+                if (m_RgbPlayer   != null && m_RgbPlayer.isPrepared)   m_RgbPlayer.frame   = (long)frameIndex;
+                if (m_DepthPlayer != null && m_DepthPlayer.isPrepared) m_DepthPlayer.frame = (long)frameIndex;
+                Volatile.Write(ref m_CurrentFrame, (long)frameIndex);
             }
 
             public void DestroyTextures()
             {
-                if (m_RgbPlayer   != null) { m_RgbPlayer.Stop();   m_RgbPlayer   = null; }
-                if (m_DepthPlayer != null) { m_DepthPlayer.Stop(); m_DepthPlayer = null; }
+                if (m_RgbPlayer != null)
+                {
+                    m_RgbPlayer.frameReady       -= OnRgbFrameReady;
+                    m_RgbPlayer.prepareCompleted -= OnRgbPrepared;
+                    m_RgbPlayer.Stop();
+                    m_RgbPlayer = null;
+                }
+                if (m_DepthPlayer != null)
+                {
+                    m_DepthPlayer.prepareCompleted -= OnDepthPrepared;
+                    m_DepthPlayer.Stop();
+                    m_DepthPlayer = null;
+                }
                 if (m_RgbGo   != null) { UnityEngine.Object.Destroy(m_RgbGo);   m_RgbGo   = null; }
                 if (m_DepthGo != null) { UnityEngine.Object.Destroy(m_DepthGo); m_DepthGo = null; }
                 if (m_RgbRT   != null) { m_RgbRT.Release();   UnityEngine.Object.Destroy(m_RgbRT);   m_RgbRT   = null; }
@@ -481,6 +603,231 @@ namespace SensorFlex.Player.Library
                 try { if (File.Exists(path)) File.Delete(path); }
                 catch (Exception e) { Debug.LogWarning($"[SF] Failed to delete temp file {path}: {e.Message}"); }
             }
+
+            public void      UpdateDepthForFrame(int fi) { }
+            public Texture2D V2DepthTexture               => null;
+        }
+
+        // ── Nested: Video backend state (v2.0) ───────────────────────────────
+        // RGB VideoPlayer only; depth loaded on-demand from extracted depth.bin
+        // via K4os LZ4_RAW decompression into a RFloat Texture2D.
+
+        sealed class VideoV2BackendState : IBackendState
+        {
+            int m_PlayHead = -1;
+            int m_LatestGlobalIndex = -1;
+
+            public double    FrameInterval                  { get; set; }
+            public Matrix4x4 CoordConvMatrix                { get; set; } = Matrix4x4.identity;
+            public bool      UseNegativeZForwardOpticalAxis  { get; set; }
+            public int       TotalFrames                    { get; set; }
+            public int       BufSize                        => TotalFrames;
+            public bool      IsReady                        { get; set; }
+
+            public Texture2D[]  Frames        { get => null; set { } }
+            public byte[][]     DepthBins     { get => null; set { } }
+            public Matrix4x4[]  Poses         { get; set; }
+            public Vector4[]    Intrinsics    { get; set; }
+            public bool[]       SlotReady     { get; set; }
+            public int[]        SlotGlobalIdx { get; set; }
+            public int          PendingDecodeCount { get; set; }
+
+            public int PlayHead
+            {
+                get => Volatile.Read(ref m_PlayHead);
+                set => Volatile.Write(ref m_PlayHead, value);
+            }
+
+            public int LatestGlobalIndex
+            {
+                get => Volatile.Read(ref m_LatestGlobalIndex);
+                set => Volatile.Write(ref m_LatestGlobalIndex, value);
+            }
+
+            // ── Video-specific ────────────────────────────────────────────────
+            public bool IsVideoMode => true;
+
+            RenderTexture m_RgbRT;
+            GameObject    m_RgbGo;
+            VideoPlayer   m_RgbPlayer;
+            bool          m_RgbPrepared;
+            string        m_TempRgbPath;
+            string        m_TempDepthBinPath;
+            long          m_CurrentFrame = -1;
+            Action<int>   m_FrameReadyCallback;
+
+            // ── Depth ─────────────────────────────────────────────────────────
+            SfzV2FrameRecord[] m_V2Records;
+            FileStream         m_DepthStream;
+            Texture2D          m_DepthTexture;
+            int                m_DepthW, m_DepthH;
+            byte[]             m_CompressedBuf;
+            byte[]             m_DecompressedBuf;
+
+            public RenderTexture VideoRgbTexture   => m_RgbRT;
+            public RenderTexture VideoDepthTexture => null;
+            public Texture2D     V2DepthTexture    => m_DepthTexture;
+
+            public void AllocateRingBuffer()
+            {
+                SlotReady     = new bool[TotalFrames];
+                SlotGlobalIdx = new int[TotalFrames];
+                Poses         = new Matrix4x4[TotalFrames];
+                Intrinsics    = new Vector4[TotalFrames];
+                for (int i = 0; i < TotalFrames; i++)
+                {
+                    SlotReady[i]     = true;
+                    SlotGlobalIdx[i] = i;
+                    Poses[i]         = Matrix4x4.identity;
+                }
+            }
+
+            public void MarkBuffered(int framesToWait) { }
+
+            public void InitializePlayers(
+                string rgbPath, string depthBinPath,
+                SfzV2FrameRecord[] v2Records,
+                int rgbW, int rgbH, int depthW, int depthH)
+            {
+                m_TempRgbPath      = rgbPath;
+                m_TempDepthBinPath = depthBinPath;
+                m_V2Records        = v2Records;
+                m_DepthW           = depthW;
+                m_DepthH           = depthH;
+
+                m_RgbRT = new RenderTexture(rgbW, rgbH, 0, RenderTextureFormat.ARGB32) { name = "SF-V2-RgbVideo" };
+                m_RgbRT.Create();
+
+                m_DepthTexture = new Texture2D(depthW, depthH, TextureFormat.RFloat, false) { name = "SF-V2-Depth" };
+
+                if (File.Exists(depthBinPath))
+                    m_DepthStream = File.OpenRead(depthBinPath);
+                else
+                    Debug.LogWarning($"[SF] V2: depth.bin not found at {depthBinPath}");
+
+                m_DecompressedBuf = new byte[depthW * depthH * 4];
+
+                m_RgbGo = new GameObject("SF-VideoPlayer-V2-RGB") { hideFlags = HideFlags.HideAndDontSave };
+                UnityEngine.Object.DontDestroyOnLoad(m_RgbGo);
+
+                m_RgbPlayer = m_RgbGo.AddComponent<VideoPlayer>();
+                m_RgbPlayer.source          = VideoSource.Url;
+                m_RgbPlayer.url             = "file://" + rgbPath;
+                m_RgbPlayer.renderMode      = VideoRenderMode.RenderTexture;
+                m_RgbPlayer.targetTexture   = m_RgbRT;
+                m_RgbPlayer.playOnAwake     = false;
+                m_RgbPlayer.isLooping       = false;
+                m_RgbPlayer.audioOutputMode = VideoAudioOutputMode.None;
+                m_RgbPlayer.skipOnDrop      = false;
+                m_RgbPlayer.sendFrameReadyEvents = true;
+                m_RgbPlayer.frameReady          += OnRgbFrameReady;
+                m_RgbPlayer.prepareCompleted    += OnRgbPrepared;
+                m_RgbPlayer.Prepare();
+            }
+
+            void OnRgbFrameReady(VideoPlayer _, long frameIdx)
+            {
+                Volatile.Write(ref m_CurrentFrame, frameIdx);
+                m_FrameReadyCallback?.Invoke((int)frameIdx);
+            }
+
+            void OnRgbPrepared(VideoPlayer _)
+            {
+                m_RgbPrepared = true;
+                if (m_RgbPlayer.isPlaying) m_RgbPlayer.Pause();
+                IsReady = true;
+                Debug.Log("[SF] VideoV2BackendState: RGB VideoPlayer prepared.");
+            }
+
+            public void UpdateDepthForFrame(int frameIdx)
+            {
+                if (m_DepthStream == null || m_V2Records == null ||
+                    frameIdx < 0 || frameIdx >= m_V2Records.Length) return;
+
+                ref var rec = ref m_V2Records[frameIdx];
+                if (rec.DepthByteSize <= 0) return;
+
+                if (m_CompressedBuf == null || m_CompressedBuf.Length < rec.DepthByteSize)
+                    m_CompressedBuf = new byte[rec.DepthByteSize];
+
+                try
+                {
+                    m_DepthStream.Seek(rec.DepthByteOffset, SeekOrigin.Begin);
+                    int totalRead = 0;
+                    while (totalRead < rec.DepthByteSize)
+                    {
+                        int n = m_DepthStream.Read(m_CompressedBuf, totalRead, rec.DepthByteSize - totalRead);
+                        if (n <= 0) break;
+                        totalRead += n;
+                    }
+                    Lz4BlockDecoder.Decode(m_CompressedBuf, 0, rec.DepthByteSize,
+                                           m_DecompressedBuf, 0, m_DecompressedBuf.Length);
+                    m_DepthTexture.LoadRawTextureData(m_DecompressedBuf);
+                    m_DepthTexture.Apply(false);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[SF] V2 depth decode failed frame={frameIdx}: {e.Message}");
+                }
+            }
+
+            public void SetFrameReadyCallback(Action<int> cb) { m_FrameReadyCallback = cb; }
+
+            public void PlayVideo()  { m_RgbPlayer?.Play(); }
+            public void PauseVideo() { if (m_RgbPlayer?.isPlaying == true) m_RgbPlayer.Pause(); }
+
+            public void SetVideoPlaybackSpeed(float speed)
+            { if (m_RgbPlayer != null) m_RgbPlayer.playbackSpeed = speed; }
+
+            public void SetVideoLooping(bool loop)
+            { if (m_RgbPlayer != null) m_RgbPlayer.isLooping = loop; }
+
+            public long VideoPlayerCurrentFrame => Volatile.Read(ref m_CurrentFrame);
+
+            public void SeekVideoFrame(int frameIndex)
+            {
+                if (m_RgbPlayer != null && m_RgbPlayer.isPrepared)
+                    m_RgbPlayer.frame = (long)frameIndex;
+                Volatile.Write(ref m_CurrentFrame, (long)frameIndex);
+            }
+
+            public void DestroyTextures()
+            {
+                if (m_RgbPlayer != null)
+                {
+                    m_RgbPlayer.frameReady       -= OnRgbFrameReady;
+                    m_RgbPlayer.prepareCompleted -= OnRgbPrepared;
+                    m_RgbPlayer.Stop();
+                    m_RgbPlayer = null;
+                }
+                if (m_RgbGo != null) { UnityEngine.Object.Destroy(m_RgbGo); m_RgbGo = null; }
+                if (m_RgbRT != null) { m_RgbRT.Release(); UnityEngine.Object.Destroy(m_RgbRT); m_RgbRT = null; }
+                if (m_DepthTexture != null) { UnityEngine.Object.Destroy(m_DepthTexture); m_DepthTexture = null; }
+                m_DepthStream?.Close();
+                m_DepthStream = null;
+                TryDeleteTemp(m_TempRgbPath);
+                TryDeleteTemp(m_TempDepthBinPath);
+            }
+
+            static void TryDeleteTemp(string path)
+            {
+                if (string.IsNullOrEmpty(path)) return;
+                try { if (File.Exists(path)) File.Delete(path); }
+                catch (Exception e) { Debug.LogWarning($"[SF] Failed to delete temp file {path}: {e.Message}"); }
+            }
+        }
+
+        // ── Nested: SFZ v2.0 frame record ────────────────────────────────────
+
+        struct SfzV2FrameRecord
+        {
+            public int        FrameIndex;
+            public long       TimestampNs;
+            public Vector3    Position;
+            public Quaternion Rotation;
+            public Vector4    Intrinsics;    // (fx, fy, cx, cy)
+            public long       DepthByteOffset;
+            public int        DepthByteSize;
         }
 
         // ── Nested: Session contracts ─────────────────────────────────────────
@@ -544,12 +891,15 @@ namespace SensorFlex.Player.Library
             public IReadOnlyDictionary<string, SfzAttachmentInfo>  Attachments { get; }
             internal SfzFrameRecordJson[] FrameRecords { get; }
             internal bool   IsVideoFormat { get; }
+            internal bool   IsV2Format    { get; }
             internal string RgbMp4File   { get; }
             internal string DepthMp4File { get; }
+            internal string DepthBinFile { get; }
             internal int    RgbWidth     { get; }
             internal int    RgbHeight    { get; }
             internal int    DepthWidth   { get; }
             internal int    DepthHeight  { get; }
+            internal int    FrameCount   { get; }
 
             internal SfzSessionData(
                 string sessionId,
@@ -557,24 +907,30 @@ namespace SensorFlex.Player.Library
                 IReadOnlyDictionary<string, SfzAttachmentInfo> attachments,
                 SfzFrameRecordJson[]                           frameRecords,
                 bool   isVideoFormat = false,
+                bool   isV2Format    = false,
                 string rgbMp4File    = null,
                 string depthMp4File  = null,
+                string depthBinFile  = null,
                 int    rgbWidth      = 1920,
                 int    rgbHeight     = 1440,
                 int    depthWidth    = 256,
-                int    depthHeight   = 192)
+                int    depthHeight   = 192,
+                int    frameCount    = 0)
             {
                 SessionId    = sessionId   ?? "session";
                 Tracks       = tracks      ?? new Dictionary<string, SfzTrackInfo>();
                 Attachments  = attachments ?? new Dictionary<string, SfzAttachmentInfo>();
                 FrameRecords = frameRecords;
                 IsVideoFormat = isVideoFormat;
+                IsV2Format   = isV2Format;
                 RgbMp4File   = rgbMp4File;
                 DepthMp4File = depthMp4File;
+                DepthBinFile = depthBinFile;
                 RgbWidth     = rgbWidth;
                 RgbHeight    = rgbHeight;
                 DepthWidth   = depthWidth;
                 DepthHeight  = depthHeight;
+                FrameCount   = frameCount;
             }
         }
 
@@ -630,13 +986,41 @@ namespace SensorFlex.Player.Library
 
         [Serializable] class SfzSessionJson
         {
-            public string              version;
+            public string              sfz_version;   // "2.0" for v2.0 files
+            public string              version;       // "1.0" / "1.1" for legacy files
             public string              session_id;
             public string              start_time_utc;
             public SfzDeviceJson       device;
             public SfzTracksJson       tracks;
             public SfzAttachmentsJson  attachments;
             public SfzPartJson[]       parts;
+        }
+
+        // ── Nested: SFZ v2.0 DTOs ────────────────────────────────────────────
+
+        [Serializable] class SfzV2RgbJson   { public int width; public int height; public string encoding; public string file; }
+        [Serializable] class SfzV2DepthJson { public int width; public int height; public string encoding; public string file; public string units; public string sensor; }
+        [Serializable] class SfzV2SessionJson
+        {
+            public string         sfz_version;
+            public string         session_id;
+            public string         start_time_utc;
+            public SfzDeviceJson  device;
+            public int            actual_fps;
+            public int            frame_count;
+            public SfzV2RgbJson   rgb;
+            public SfzV2DepthJson depth;
+        }
+
+        [Serializable] class SfzV2FrameLineJson
+        {
+            public int   frame;
+            public long  ts;
+            public float[] pos;
+            public float[] rot;
+            public float fx, fy, cx, cy;
+            public long  depth_off;
+            public int   depth_sz;
         }
 
         // ── Nested: SFZ conversion helpers ───────────────────────────────────
@@ -989,10 +1373,15 @@ namespace SensorFlex.Player.Library
                 return combined;
             }
 
-            // ── v1.1 video loading ────────────────────────────────────────────
+            // ── Video and v2.0 loading ────────────────────────────────────────
 
             public override void StartLoading(SfzSessionData data, int bufSize, int framesToWait)
             {
+                if (data.IsV2Format)
+                {
+                    StartV2Loading(data);
+                    return;
+                }
                 if (data.IsVideoFormat)
                 {
                     StartVideoLoading(data);
@@ -1043,6 +1432,143 @@ namespace SensorFlex.Player.Library
 
                 LatestTextureDimensions = new Vector2Int(data.RgbWidth, data.RgbHeight);
                 Debug.Log($"[SF] SFZ video loading started. frames={totalFrames} fps={1.0 / vState.FrameInterval:F0}");
+            }
+
+            void StartV2Loading(SfzSessionData data)
+            {
+                int totalFrames = data.FrameCount;
+                if (totalFrames <= 0)
+                {
+                    Debug.LogError("[SF] SFZ v2: frame_count is zero or missing.");
+                    return;
+                }
+
+                bool hasFrames = data.Tracks.TryGetValue("frames", out var framesTrack);
+
+                string cacheDir = Path.Combine(Application.temporaryCachePath, "SFVideoCache");
+                Directory.CreateDirectory(cacheDir);
+
+                string rgbPath      = ExtractFileToTemp(data.RgbMp4File,  cacheDir);
+                string depthBinPath = ExtractFileToTemp(data.DepthBinFile, cacheDir);
+                if (rgbPath == null) return;
+
+                // Parse frames.jsonl for poses, intrinsics, and depth offsets.
+                var v2Records = ParseFramesJsonl(cacheDir, totalFrames);
+
+                var vState = new VideoV2BackendState
+                {
+                    TotalFrames   = totalFrames,
+                    FrameInterval = hasFrames ? framesTrack.SampleInterval : 1.0 / 60,
+                };
+
+                vState.AllocateRingBuffer();
+
+                if (v2Records != null)
+                {
+                    for (int i = 0; i < v2Records.Length && i < totalFrames; i++)
+                    {
+                        vState.Poses[i]     = Matrix4x4.TRS(v2Records[i].Position, v2Records[i].Rotation, Vector3.one);
+                        vState.Intrinsics[i] = v2Records[i].Intrinsics;
+                    }
+                }
+
+                vState.InitializePlayers(rgbPath, depthBinPath ?? string.Empty,
+                    v2Records, data.RgbWidth, data.RgbHeight, data.DepthWidth, data.DepthHeight);
+
+                m_State       = vState;
+                m_SessionData = data;
+
+                LatestTextureDimensions = new Vector2Int(data.RgbWidth, data.RgbHeight);
+                Debug.Log($"[SF] SFZ v2.0 loading started. frames={totalFrames} fps={1.0 / vState.FrameInterval:F0}");
+            }
+
+            // Reads frames.jsonl from the SFZ archive into the cache dir, then parses it.
+            SfzV2FrameRecord[] ParseFramesJsonl(string cacheDir, int expectedCount)
+            {
+                // frames.jsonl may already have been extracted, or extract now.
+                string jsonlPath = Path.Combine(cacheDir, "frames.jsonl");
+                if (!File.Exists(jsonlPath))
+                {
+                    try
+                    {
+                        using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
+                        var entry = archive.GetEntry("session/frames.jsonl");
+                        if (entry == null)
+                        {
+                            Debug.LogError("[SF] SFZ v2: session/frames.jsonl not found in archive.");
+                            return null;
+                        }
+                        using var src = entry.Open();
+                        using var dst = File.Create(jsonlPath);
+                        src.CopyTo(dst);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogError($"[SF] SFZ v2: failed to extract frames.jsonl: {e}");
+                        return null;
+                    }
+                }
+
+                try
+                {
+                    var records = new List<SfzV2FrameRecord>(expectedCount);
+                    using var reader = new StreamReader(jsonlPath, Encoding.UTF8);
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        var j = JsonUtility.FromJson<SfzV2FrameLineJson>(line);
+                        if (j == null) continue;
+                        records.Add(new SfzV2FrameRecord
+                        {
+                            FrameIndex      = j.frame,
+                            TimestampNs     = j.ts,
+                            Position        = j.pos  != null && j.pos.Length >= 3
+                                              ? new Vector3(j.pos[0], j.pos[1], j.pos[2])
+                                              : Vector3.zero,
+                            Rotation        = j.rot  != null && j.rot.Length >= 4
+                                              ? new Quaternion(j.rot[0], j.rot[1], j.rot[2], j.rot[3])
+                                              : Quaternion.identity,
+                            Intrinsics      = new Vector4(j.fx, j.fy, j.cx, j.cy),
+                            DepthByteOffset = j.depth_off,
+                            DepthByteSize   = j.depth_sz,
+                        });
+                    }
+                    Debug.Log($"[SF] SFZ v2: parsed {records.Count} frame records from frames.jsonl.");
+                    return records.ToArray();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[SF] SFZ v2: failed to parse frames.jsonl: {e}");
+                    return null;
+                }
+            }
+
+            string ExtractFileToTemp(string archiveFileName, string cacheDir)
+            {
+                if (string.IsNullOrEmpty(archiveFileName)) return null;
+                string dest = Path.Combine(cacheDir, archiveFileName);
+                if (File.Exists(dest)) return dest;   // already extracted
+                try
+                {
+                    using var archive = new ZipArchive(File.OpenRead(m_ArchivePath), ZipArchiveMode.Read);
+                    var entry = archive.GetEntry("session/" + archiveFileName);
+                    if (entry == null)
+                    {
+                        Debug.LogError($"[SF] SFZ: entry 'session/{archiveFileName}' not found.");
+                        return null;
+                    }
+                    using var src = entry.Open();
+                    using var dst = File.Create(dest);
+                    src.CopyTo(dst);
+                    Debug.Log($"[SF] Extracted {archiveFileName} ({entry.Length / 1024} KB) to {dest}");
+                    return dest;
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[SF] SFZ: failed to extract {archiveFileName}: {e}");
+                    return null;
+                }
             }
 
             string ExtractMp4ToTemp(string mp4File, string cacheDir)

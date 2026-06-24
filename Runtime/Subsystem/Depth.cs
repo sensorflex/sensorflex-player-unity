@@ -285,8 +285,18 @@ namespace SensorFlex.Player.Subsystem
                 if (!SfzSessionStore.IsReady)
                     return;
 
+                // v2.0: VideoV2BackendState provides a Texture2D (RFloat) directly.
+                // It is updated by the Camera subsystem when a new RGB frame fires.
+                if (SfzSessionStore.V2DepthTexture != null)
+                {
+                    framesReady = true;
+                    Debug.Log("[SF] OcclusionSubsystem: v2.0 LZ4 depth texture ready.");
+                    return;
+                }
+
                 if (SfzSessionStore.IsVideoMode)
                 {
+                    // v1.1: depth is a BGRA float16 RenderTexture that needs a blit.
                     var shader = Shader.Find("SensorFlex/DepthBgraToFloat");
                     if (shader == null)
                     {
@@ -314,6 +324,15 @@ namespace SensorFlex.Player.Subsystem
                 EnsureSfzLoaderReady();
                 if (!framesReady)
                     return;
+
+                // v2.0: Camera subsystem already decoded depth via UpdateVideoDepthForFrame.
+                // Just point to the current texture — no further work needed here.
+                var v2Depth = SfzSessionStore.V2DepthTexture;
+                if (v2Depth != null)
+                {
+                    m_CurrentDepthTexture = v2Depth;
+                    return;
+                }
 
                 if (SfzSessionStore.IsVideoMode)
                 {

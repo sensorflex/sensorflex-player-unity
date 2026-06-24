@@ -188,9 +188,9 @@ namespace SensorFlex.Player.Subsystem
                 if (m_StartupStage == StartupStage.Playing && !ControlBridge.IsPlaying)
                     return;
 
-                if (IsLiveMode)
+                if (IsLiveMode || (SfzSessionStore.IsVideoMode && m_StartupStage == StartupStage.Playing))
                 {
-                    // Live mode: always run — time-proportional advance happens inside UpdateBufferedFrame.
+                    // Live mode and video SFZ have their own clocks; run every AR update.
                     UpdateBufferedFrame();
                 }
                 else
@@ -236,13 +236,13 @@ namespace SensorFlex.Player.Subsystem
 
             void UpdateBufferedFrame()
             {
-                if (m_StartupStage == StartupStage.WarmingUpFrames && showLoadingScreen)
+                if (m_StartupStage == StartupStage.WarmingUpFrames)
                 {
-                    if (EnableProgrammaticLoadingOverlay)
-                        UpdateLoadingScreenText();
-
                     if (IsLiveMode)
                     {
+                        if (EnableProgrammaticLoadingOverlay)
+                            UpdateLoadingScreenText();
+
                         // Live: wait for PreloadFrameCount frames before starting.
                         if (!SfzSessionStore.IsReady)
                             return;
@@ -278,40 +278,81 @@ namespace SensorFlex.Player.Subsystem
                         return;
                     }
 
-                    // Replay warmup: count ticks until FramesToWait frames have been buffered.
-                    // Video mode skips frame-count warmup — just wait for VideoPlayers to prepare.
-                    FramesLoaded++;
-
-                    bool warmupDone = SfzSessionStore.IsVideoMode || FramesLoaded >= FramesToWait;
-                    if (warmupDone && SfzSessionStore.IsReady)
+                    if (SfzSessionStore.IsVideoMode)
                     {
-                        if (!m_LoggedPreloadComplete)
+                        // Video SFZ: no frame preloading. Hide the loading screen immediately
+                        // and wait silently for the VideoPlayers to finish Prepare().
+                        if (showLoadingScreen)
                         {
-                            Debug.Log(
-                                $"[SF] Preload complete ({session.SourceMode}). " +
-                                $"FramesLoaded={FramesLoaded} FramesToWait={FramesToWait} " +
-                                $"TotalFrames={SfzSessionStore.TotalFrames} PlayHead={SfzSessionStore.PlayHead}");
-                            m_LoggedPreloadComplete = true;
+                            showLoadingScreen = false;
+                            if (EnableProgrammaticLoadingOverlay)
+                                m_LoadingOverlay?.Hide();
                         }
+
+                        if (!SfzSessionStore.IsReady)
+                            return;
+                    }
+                    else
+                    {
+                        // Non-video (ZIP or FileIo): preload frames behind a loading screen.
+                        if (EnableProgrammaticLoadingOverlay)
+                            UpdateLoadingScreenText();
+
+                        FramesLoaded++;
+
+                        if (FramesLoaded < FramesToWait || !SfzSessionStore.IsReady)
+                            return;
 
                         showLoadingScreen = false;
                         if (EnableProgrammaticLoadingOverlay)
                             m_LoadingOverlay?.Hide();
-
-                        m_StartupStage = StartupStage.Playing;
-                        if (session?.AutoPlay == false)
-                            ControlBridge.Pause();
-
-                        int firstGlobalFrameIndex = 0;
-                        int firstSlot = firstGlobalFrameIndex % SfzSessionStore.BufSize;
-                        if (!SfzSessionStore.SlotReady[firstSlot] || SfzSessionStore.SlotGlobalIdx[firstSlot] != firstGlobalFrameIndex)
-                            return;
-
-                        SfzSessionStore.PlayHead = firstGlobalFrameIndex;
-                        PlayBufferedSlot(firstSlot);
-                        OnFramesReady?.Invoke();
                     }
 
+                    // ── Warmup complete — transition to Playing ──────────────────
+                    if (!m_LoggedPreloadComplete)
+                    {
+                        Debug.Log(
+                            $"[SF] Preload complete ({session.SourceMode}). " +
+                            $"FramesLoaded={FramesLoaded} FramesToWait={FramesToWait} " +
+                            $"TotalFrames={SfzSessionStore.TotalFrames} PlayHead={SfzSessionStore.PlayHead}");
+                        m_LoggedPreloadComplete = true;
+                    }
+
+                    m_StartupStage = StartupStage.Playing;
+                    Debug.Log($"[SF] Warmup → Playing. AutoPlay={session?.AutoPlay} IsVideoMode={SfzSessionStore.IsVideoMode}");
+                    if (session?.AutoPlay == false)
+                        ControlBridge.Pause();
+
+                    if (SfzSessionStore.IsVideoMode)
+                    {
+                        // Wire up the per-frame callback — drives PlayHead independently of TryGetFrame.
+                        SfzSessionStore.SetVideoFrameReadyCallback(HandleVideoFrameReady);
+
+                        SfzSessionStore.SetVideoLooping(session?.LoopSequence ?? true);
+                        SfzSessionStore.SetVideoPlaybackSpeed(ControlBridge.PlaybackSpeed);
+
+                        // Seek to frame 0 before playing — the VideoPlayer may have drifted
+                        // from frame 0 during the prepare phase due to platform auto-play.
+                        SfzSessionStore.SeekVideoFrame(0);
+
+                        if (session?.AutoPlay != false)
+                            SfzSessionStore.PlayVideo();
+
+                        // Show frame 0 as the initial still.
+                        SfzSessionStore.PlayHead = 0;
+                        SetCurrentTexture(SfzSessionStore.VideoRgbTexture);
+                        OnFramesReady?.Invoke();
+                        return;
+                    }
+
+                    int firstGlobalFrameIndex = 0;
+                    int firstSlot = firstGlobalFrameIndex % SfzSessionStore.BufSize;
+                    if (!SfzSessionStore.SlotReady[firstSlot] || SfzSessionStore.SlotGlobalIdx[firstSlot] != firstGlobalFrameIndex)
+                        return;
+
+                    SfzSessionStore.PlayHead = firstGlobalFrameIndex;
+                    PlayBufferedSlot(firstSlot);
+                    OnFramesReady?.Invoke();
                     return;
                 }
 
@@ -370,6 +411,11 @@ namespace SensorFlex.Player.Subsystem
                     return;
                 }
 
+                // Video SFZ: frame updates are driven by HandleVideoFrameReady (frameReady event),
+                // not by this polling path.
+                if (SfzSessionStore.IsVideoMode)
+                    return;
+
                 // Replay: advance one frame at a time
                 int nextGlobalFrameIndex = SfzSessionStore.PlayHead + 1;
                 if (SfzSessionStore.TotalFrames != int.MaxValue && nextGlobalFrameIndex >= SfzSessionStore.TotalFrames)
@@ -393,8 +439,11 @@ namespace SensorFlex.Player.Subsystem
             {
                 if (SfzSessionStore.IsVideoMode)
                 {
-                    SfzSessionStore.SeekVideoFrame(slot);
+                    // Don't seek — the VideoPlayer is playing naturally. Just bind the RT
+                    // and look up metadata for the current frame index (slot == frame index).
                     SetCurrentTexture(SfzSessionStore.VideoRgbTexture);
+                    // v2.0: decode the LZ4 depth block for this frame (no-op for v1.1).
+                    SfzSessionStore.UpdateVideoDepthForFrame(slot);
                 }
                 else
                 {
@@ -580,17 +629,19 @@ namespace SensorFlex.Player.Subsystem
 
             void SubscribeControlBridge()
             {
-                ControlBridge.OnStepForward              += HandleStepForward;
-                ControlBridge.OnPlayStateChanged         += HandlePlayStateChanged;
-                ControlBridge.OnRestart                  += HandleRestart;
+                ControlBridge.OnStepForward               += HandleStepForward;
+                ControlBridge.OnPlayStateChanged          += HandlePlayStateChanged;
+                ControlBridge.OnSpeedChanged              += HandleSpeedChanged;
+                ControlBridge.OnRestart                   += HandleRestart;
                 ControlBridge.OnDepthVisualizationChanged += HandleDepthVisualizationChanged;
             }
 
             void UnsubscribeControlBridge()
             {
-                ControlBridge.OnStepForward              -= HandleStepForward;
-                ControlBridge.OnPlayStateChanged         -= HandlePlayStateChanged;
-                ControlBridge.OnRestart                  -= HandleRestart;
+                ControlBridge.OnStepForward               -= HandleStepForward;
+                ControlBridge.OnPlayStateChanged          -= HandlePlayStateChanged;
+                ControlBridge.OnSpeedChanged              -= HandleSpeedChanged;
+                ControlBridge.OnRestart                   -= HandleRestart;
                 ControlBridge.OnDepthVisualizationChanged -= HandleDepthVisualizationChanged;
             }
 
@@ -603,6 +654,12 @@ namespace SensorFlex.Player.Subsystem
 
             void HandlePlayStateChanged(bool isPlaying)
             {
+                if (SfzSessionStore.IsVideoMode)
+                {
+                    if (isPlaying) SfzSessionStore.PlayVideo();
+                    else           SfzSessionStore.PauseVideo();
+                }
+
                 if (isPlaying)
                 {
                     // Reset timers on unpause to avoid burst of catch-up frames.
@@ -610,6 +667,29 @@ namespace SensorFlex.Player.Subsystem
                     if (IsLiveMode)
                         m_LiveLastAdvanceTime = Time.realtimeSinceStartupAsDouble;
                 }
+            }
+
+            void HandleSpeedChanged(float speed)
+            {
+                if (SfzSessionStore.IsVideoMode)
+                    SfzSessionStore.SetVideoPlaybackSpeed(speed);
+            }
+
+            // Called on the Unity main thread by VideoPlayer.frameReady — once per rendered frame.
+            void HandleVideoFrameReady(int frameIdx)
+            {
+                if (m_StartupStage != StartupStage.Playing) return;
+                if (!ControlBridge.IsPlaying) return;
+                if (frameIdx < 0 || frameIdx >= SfzSessionStore.TotalFrames)
+                {
+                    Debug.LogWarning($"[SF] HandleVideoFrameReady: frameIdx={frameIdx} out of range [0,{SfzSessionStore.TotalFrames})");
+                    return;
+                }
+                if (frameIdx == SfzSessionStore.PlayHead) return;
+
+                SfzSessionStore.PlayHead = frameIdx;
+                PlayBufferedSlot(frameIdx);
+                OnFramesReady?.Invoke();
             }
 
             async void HandleRestart()
@@ -625,21 +705,34 @@ namespace SensorFlex.Player.Subsystem
             // Only called when paused, in response to ControlBridge.OnStepForward.
             void ExecuteBufferedStep()
             {
-                int next = SfzSessionStore.PlayHead + 1;
-                if (SfzSessionStore.TotalFrames != int.MaxValue && next >= SfzSessionStore.TotalFrames)
+                if (SfzSessionStore.IsVideoMode)
+                {
+                    int next = SfzSessionStore.PlayHead + 1;
+                    if (SfzSessionStore.TotalFrames != int.MaxValue && next >= SfzSessionStore.TotalFrames)
+                        return;
+                    SfzSessionStore.SeekVideoFrame(next);
+                    SfzSessionStore.PlayHead = next;
+                    PlayBufferedSlot(next);
+                    OnFramesReady?.Invoke();
+                    return;
+                }
+
+                int nextSlot = SfzSessionStore.PlayHead + 1;
+                if (SfzSessionStore.TotalFrames != int.MaxValue && nextSlot >= SfzSessionStore.TotalFrames)
                     return;
 
-                int slot = next % SfzSessionStore.BufSize;
-                if (!SfzSessionStore.SlotReady[slot] || SfzSessionStore.SlotGlobalIdx[slot] != next)
+                int slot = nextSlot % SfzSessionStore.BufSize;
+                if (!SfzSessionStore.SlotReady[slot] || SfzSessionStore.SlotGlobalIdx[slot] != nextSlot)
                     return;
 
-                SfzSessionStore.PlayHead = next;
+                SfzSessionStore.PlayHead = nextSlot;
                 PlayBufferedSlot(slot);
                 OnFramesReady?.Invoke();
             }
 
             public override async void Stop()
             {
+                SfzSessionStore.SetVideoFrameReadyCallback(null);
                 UnsubscribeControlBridge();
                 ControlBridge.Clear();
 

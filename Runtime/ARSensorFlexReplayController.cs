@@ -127,7 +127,7 @@ namespace SensorFlex.Player
             GUI.DrawTexture(new Rect(px, py, pw, ph), m_ProgressBgTex);
             if (total > 0)
             {
-                float t = Mathf.Clamp01((float)cur / total);
+                float t = Mathf.Clamp01((float)(cur + 1) / total);
                 GUI.DrawTexture(new Rect(px, py, pw * t, ph), m_ProgressFillTex);
             }
         }
